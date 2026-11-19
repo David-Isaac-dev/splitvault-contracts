@@ -1951,6 +1951,21 @@ pub fn deadline_extended(env: &Env, invoice_id: u64, old_deadline: u64, new_dead
     );
 }
 
+/// Issue #242: Emitted when a bid is accepted on an invoice.
+///
+/// Only accepted bids emit this event; rejected bids emit nothing, so indexers
+/// can treat every `bid` event as a confirmed bid for the given invoice.
+///
+/// Topics: (split, bid, invoice_id)
+/// Data: (bidder, amount, event_seq)
+pub fn bid_placed(env: &Env, invoice_id: u64, bidder: &Address, amount: i128) {
+    let event_seq = next_seq(env, invoice_id);
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("bid"), invoice_id),
+        (bidder.clone(), amount, event_seq),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests for the per-invoice event sequence counter (issue #708)
 // ---------------------------------------------------------------------------

@@ -151,4 +151,11 @@ pub enum ContractError {
     /// Structured variant so RPC callers can inspect the error code and prompt
     /// a migration workflow instead of seeing a generic WASM trap.
     SchemaMigrationRequired = 101,
+    /// Issue #240: `trigger_reminder` was called for an account that has no
+    /// scheduled reminder (never set, already triggered, or cancelled).
+    ReminderNotSet = 102,
+    /// Issue #241: `place_bid` would exceed the documented per-auction bid capacity.
+    AuctionBidLimitExceeded = 103,
+    /// Issue #247: `estimate_compute` received a count input above the supported bound.
+    EstimateCountOutOfBounds = 104,
 }

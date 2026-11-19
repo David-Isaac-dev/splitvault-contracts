@@ -58,6 +58,25 @@ pub struct ComputeEstimate {
    - **Input Parameters**: `invoice_id` (`u64`).
    - **Methodology**: Estimates governance approval status update and audit log recording.
 
+### Supported Count Bounds
+
+Count-based inputs (`recipient_count`, `payer_count`, and the length of `recipients`) are validated against the contract's supported operation limits before any scaling is applied:
+
+- **Maximum supported count**: `MAX_RECIPIENTS` (see `contracts/split/src/lib.rs`). This is the documented capacity for recipients per invoice and payers per invoice.
+- **Out-of-range inputs**: Any count above the supported bound returns a typed `ContractError` (e.g. `ContractError::TooManyRecipients`) rather than saturating or wrapping. Callers should treat this as a predictable pricing error, not a resource estimate.
+- **Checked arithmetic**: All scaling in `estimate_compute` uses checked arithmetic. If a computed estimate would overflow `u64`, the call returns a typed error instead of an unchecked value.
+- **Boundary behavior**: The largest valid input (`count == MAX_RECIPIENTS`) returns finite `cpu_insns` and `mem_bytes` estimates. No valid input produces `u64::MAX` sentinel values or overflow.
+
+---
+
+## 2a. Auction Bid Capacity & Bounded Settlement
+
+Invoice auctions accept bids that are appended to a per-invoice bid vector. To keep settlement work predictable, the number of accepted bids is bounded:
+
+- **Maximum accepted bids**: `MAX_AUCTION_BIDS` (see `contracts/split/src/lib.rs`). `place_bid` rejects any bid that would exceed this capacity with a typed error; the bid is not appended.
+- **Bounded settlement**: `settle_auction` iterates at most `MAX_AUCTION_BIDS` entries. Settlement work is therefore O(`MAX_AUCTION_BIDS`) regardless of how many bids were attempted, and every accepted bid is accounted for (winner selection and losing-bid refunds) within the supported resource budget.
+- **Verification**: A test exercises an auction at exactly `MAX_AUCTION_BIDS` and asserts that settlement completes and accounts for every accepted bid.
+
 ---
 
 ## 3. Resource Ranges
@@ -89,3 +108,4 @@ The table below lists measured typical resource consumption ranges across suppor
 1. **Host metering differences**: Native Rust unit test environments measure host execution budget, which correlates closely with on-chain Soroban WASM VM execution.
 2. **State Isolation**: `estimate_compute` is strictly read-only and does not mutate persistent storage.
 3. **Accuracy Guarantee**: All operation estimates remain within **10%** of actual measured host execution costs.
+4. **Count validation**: Estimates are only produced for counts within the supported bounds; out-of-range counts return a typed error and are never scaled.

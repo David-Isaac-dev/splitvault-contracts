@@ -9155,3 +9155,167 @@ fn test_120_certificate_hash_differs_by_recipient() {
     assert_eq!(id_a, id_b);
     assert_ne!(hash_a, hash_b);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #240 — reminder owner can cancel a scheduled reminder
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_240_cancel_reminder_prevents_trigger() {
+    let (env, contract_id, _token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let owner = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+
+    c.set_reminder(&owner, &2_000_u64);
+    assert_eq!(c.get_reminder(&owner), Some(2_000));
+
+    c.cancel_reminder(&owner);
+    assert_eq!(c.get_reminder(&owner), None);
+
+    // Once cancelled, the reminder can no longer be triggered.
+    env.ledger().set_timestamp(3_000);
+    let res = c.try_trigger_reminder(&owner);
+    assert!(res.is_err());
+}
+
+#[test]
+fn test_240_cancel_reminder_leaves_other_owner_intact() {
+    let (env, contract_id, _token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let owner_a = Address::generate(&env);
+    let owner_b = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+
+    c.set_reminder(&owner_a, &2_000_u64);
+    c.set_reminder(&owner_b, &2_000_u64);
+
+    c.cancel_reminder(&owner_a);
+    assert_eq!(c.get_reminder(&owner_a), None);
+
+    // Owner B's schedule is untouched and still triggerable.
+    assert_eq!(c.get_reminder(&owner_b), Some(2_000));
+
+    env.ledger().set_timestamp(3_000);
+    c.trigger_reminder(&owner_b);
+    assert_eq!(c.get_reminder(&owner_b), None);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #241 — bounded settlement work for invoice auctions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_241_auction_at_capacity_settles_all_bids() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
+    c.start_auction(&creator, &id, &2_000_u64);
+
+    let mut bidders = Vec::new(&env);
+    for i in 0..MAX_AUCTION_BIDS {
+        let bidder = Address::generate(&env);
+        StellarAssetClient::new(&env, &token_id).mint(&bidder, &1_000);
+        c.place_bid(&bidder, &id, &(i as i128 + 1));
+        bidders.push_back(bidder);
+    }
+
+    // A bid beyond the documented capacity is rejected.
+    let extra = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&extra, &1_000);
+    let res = c.try_place_bid(&extra, &id, &1_000_i128);
+    assert!(res.is_err());
+
+    env.ledger().set_timestamp(3_000);
+    c.settle_auction(&id);
+
+    // Every accepted bid is accounted for in the settlement.
+    let auction = c.get_auction(&id);
+    assert_eq!(auction.bids.len(), MAX_AUCTION_BIDS);
+    assert_eq!(auction.settled, true);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #242 — bid events indexed by invoice and bidder
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_242_accepted_bid_emits_event_with_invoice_and_amount() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let bidder = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&bidder, &1_000);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
+    c.start_auction(&creator, &id, &2_000_u64);
+
+    let before = env.events().all().len();
+    c.place_bid(&bidder, &id, &250_i128);
+    let events = env.events().all();
+    assert_eq!(events.len(), before + 1);
+
+    let (_, _, data) = events.get_unchecked(events.len() - 1);
+    let (event_invoice, event_amount): (u64, i128) = data.into_val(&env);
+    assert_eq!(event_invoice, id);
+    assert_eq!(event_amount, 250);
+}
+
+#[test]
+fn test_242_rejected_bid_emits_no_event() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let bidder = Address::generate(&env);
+    StellarAssetClient::new(&env, &token_id).mint(&bidder, &1_000);
+    env.ledger().set_timestamp(1_000);
+
+    let id = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
+    c.start_auction(&creator, &id, &2_000_u64);
+
+    let before = env.events().all().len();
+    // Bid below the starting price is rejected.
+    let res = c.try_place_bid(&bidder, &id, &0_i128);
+    assert!(res.is_err());
+    assert_eq!(env.events().all().len(), before);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #247 — reject compute estimate inputs outside supported counts
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_247_estimate_compute_rejects_counts_above_bound() {
+    let (env, contract_id, _token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let res = c.try_estimate_compute(&(MAX_COMPUTE_RECIPIENTS + 1), &1_u64);
+    assert_eq!(res, Err(Ok(ContractError::InvalidAmount.into())));
+
+    let res = c.try_estimate_compute(&1_u64, &(MAX_COMPUTE_RECIPIENTS + 1));
+    assert_eq!(res, Err(Ok(ContractError::InvalidAmount.into())));
+}
+
+#[test]
+fn test_247_estimate_compute_max_valid_inputs_are_finite() {
+    let (env, contract_id, _token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let estimate = c.estimate_compute(&MAX_COMPUTE_RECIPIENTS, &MAX_COMPUTE_RECIPIENTS);
+    assert!(estimate.cpu > 0);
+    assert!(estimate.memory > 0);
+    assert!(estimate.cpu < u64::MAX);
+    assert!(estimate.memory < u64::MAX);
+}

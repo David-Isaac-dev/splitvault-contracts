@@ -163,6 +163,17 @@ pub struct Bid {
     pub amount: i128,
 }
 
+/// Issue #242: Payload emitted when a bid is accepted, so observers can
+/// reconcile a running auction without polling. Carries the invoice context,
+/// the bidder and the accepted bid amount.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct BidPlaced {
+    pub invoice_id: u64,
+    pub bidder: Address,
+    pub amount: i128,
+}
+
 // ---------------------------------------------------------------------------
 // Invoice status
 // ---------------------------------------------------------------------------
