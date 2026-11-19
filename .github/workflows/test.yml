@@ -77,3 +77,95 @@ jobs:
             echo "::error::Expected 5 WASM artifacts, found $count"
             exit 1
           fi
+
+  docs-links:
+    name: Check Markdown links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check repository-owned Markdown links
+        run: |
+          set -euo pipefail
+
+          # Collect tracked Markdown documents.
+          mapfile -t docs < <(git ls-files '*.md')
+          if [ "${#docs[@]}" -eq 0 ]; then
+            echo "No Markdown documents found."
+            exit 0
+          fi
+
+          # Normalize a heading into a GitHub-style anchor slug.
+          slugify() {
+            printf '%s' "$1" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^a-z0-9 _-]//g' \
+              | sed -E 's/ +/-/g' \
+              | sed -E 's/^-+//; s/-+$//'
+          }
+
+          # Extract heading anchors from a Markdown file.
+          anchors_of() {
+            local file="$1"
+            grep -E '^#{1,6}[[:space:]]+' "$file" 2>/dev/null \
+              | sed -E 's/^#{1,6}[[:space:]]+//' \
+              | while IFS= read -r heading; do
+                  slugify "$heading"
+                  echo
+                done
+          }
+
+          fail=0
+
+          for doc in "${docs[@]}"; do
+            dir=$(dirname "$doc")
+            # Extract link targets from inline Markdown links: [text](target)
+            while IFS= read -r target; do
+              [ -z "$target" ] && continue
+
+              # Skip external HTTP(S) URLs (offline-safe).
+              case "$target" in
+                http://*|https://*|mailto:*|tel:*|ftp://*) continue ;;
+              esac
+
+              # Split off any anchor fragment.
+              path="${target%%#*}"
+              anchor=""
+              if [ "$target" != "$path" ]; then
+                anchor="${target#*#}"
+              fi
+
+              # Resolve the target path relative to the document.
+              if [ -z "$path" ]; then
+                resolved="$doc"
+              else
+                resolved="$dir/$path"
+              fi
+
+              if [ ! -e "$resolved" ]; then
+                echo "::error file=$doc::Missing link target '$target' (resolved to '$resolved')"
+                fail=1
+                continue
+              fi
+
+              # Validate heading anchors for Markdown targets.
+              if [ -n "$anchor" ] && [ -f "$resolved" ]; then
+                case "$resolved" in
+                  *.md)
+                    if ! anchors_of "$resolved" | grep -Fxq "$anchor"; then
+                      echo "::error file=$doc::Missing heading anchor '#$anchor' in '$resolved'"
+                      fail=1
+                    fi
+                    ;;
+                esac
+              fi
+            done < <(grep -oE '\]\([^)]+\)' "$doc" 2>/dev/null \
+              | sed -E 's/^\]\(//; s/\)$//' \
+              | sed -E 's/[[:space:]]+"[^"]*"$//')
+          done
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Markdown link check failed."
+            exit 1
+          fi
+          echo "All repository-owned Markdown links are valid."
