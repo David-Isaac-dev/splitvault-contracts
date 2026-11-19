@@ -149,3 +149,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 
 <!-- handsoff-issue-64 -->
 - #64: Silent Payout Loss in `reveal_confidential_payment` Due to Omission of Shard Storage
+
+<!-- handsoff-issue-129 -->
+- #129: `auto_resolve` Refund Action Iterates Over Unpopulated Payments Vector Stranding Tokens
