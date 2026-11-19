@@ -179,10 +179,25 @@ fn emit_released(env: &Env, id: u64, total: i128) {
 }
 
 /// Topics: `(escrow, refunded, id)` — Data: (payer, amount)
+///
+/// Per-payer transfer event emitted for every refunded deposit.
 fn emit_refunded(env: &Env, id: u64, payer: &Address, amount: i128) {
     env.events().publish(
         (symbol_short!("escrow"), symbol_short!("refunded"), id),
         (payer.clone(), amount),
+    );
+}
+
+/// Topics: `(escrow, ref_cmpl, id)` — Data: total_refunded
+///
+/// Invoice-level completion event emitted exactly once, when the final refund
+/// batch transitions the invoice into `Refunded`. Distinct from the per-payer
+/// [`emit_refunded`] transfer events so indexers can detect completion without
+/// polling storage.
+fn emit_refund_completed(env: &Env, id: u64, total_refunded: i128) {
+    env.events().publish(
+        (symbol_short!("escrow"), symbol_short!("ref_cmpl"), id),
+        total_refunded,
     );
 }
 
@@ -609,6 +624,7 @@ impl InvoiceEscrowContract {
         }
 
         let token_client = token::Client::new(&env, &invoice.token);
+        let mut refunded_total: i128 = 0;
         for payer in payers.iter() {
             let amount: i128 = env
                 .storage()
@@ -623,6 +639,7 @@ impl InvoiceEscrowContract {
                 // Issue #42: decrement funded_amount so the contract tracks
                 // how much remains to be refunded across batches.
                 invoice.funded_amount = invoice.funded_amount.saturating_sub(amount);
+                refunded_total = refunded_total.saturating_add(amount);
                 emit_refunded(&env, invoice_id, &payer, amount);
             }
         }
@@ -633,8 +650,13 @@ impl InvoiceEscrowContract {
         // rejected by the InvalidStatus guard above.
         if invoice.funded_amount == 0 {
             invoice.status = EscrowStatus::Refunded;
+            save_invoice(&env, invoice_id, &invoice);
+            // Issue #228: emit exactly one invoice-level completion event when
+            // the invoice crosses into Refunded (the final batch).
+            emit_refund_completed(&env, invoice_id, refunded_total);
+        } else {
+            save_invoice(&env, invoice_id, &invoice);
         }
-        save_invoice(&env, invoice_id, &invoice);
 
         release_lock(&env);
         Ok(())
