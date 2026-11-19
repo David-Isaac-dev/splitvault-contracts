@@ -152,3 +152,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 
 <!-- handsoff-issue-213 -->
 - #213: Provide a factory address prediction helper
+
+<!-- handsoff-issue-214 -->
+- #214: Correct standalone factory documentation about clones and initialization
