@@ -152,3 +152,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 
 <!-- handsoff-issue-129 -->
 - #129: `auto_resolve` Refund Action Iterates Over Unpopulated Payments Vector Stranding Tokens
+
+<!-- handsoff-issue-130 -->
+- #130: Anonymous Invoice Mode Storage Key Is Never Set Making Anonymity Queries Always False
