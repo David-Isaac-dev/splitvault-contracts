@@ -155,3 +155,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 
 <!-- handsoff-issue-130 -->
 - #130: Anonymous Invoice Mode Storage Key Is Never Set Making Anonymity Queries Always False
+
+<!-- handsoff-issue-131 -->
+- #131: Referral Reward Distribution Unimplemented in Release Workflow Leaving Fees Stranded
