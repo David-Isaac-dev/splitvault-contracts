@@ -9155,3 +9155,151 @@ fn test_120_certificate_hash_differs_by_recipient() {
     assert_eq!(id_a, id_b);
     assert_ne!(hash_a, hash_b);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #234 — queued action timing is fixed at queue time
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_234_queued_actions_keep_original_execution_time() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    env.ledger().set_timestamp(1_000);
+
+    // Queue the first action under a 100 second delay.
+    c.set_timelock_delay(&admin, &100_u64);
+    let id_a = c.queue_action(&admin, &types::TimelockedAction::SetTreasury(treasury.clone()));
+
+    // Queue the second action under a 500 second delay.
+    c.set_timelock_delay(&admin, &500_u64);
+    let id_b = c.queue_action(&admin, &types::TimelockedAction::SetTreasury(treasury.clone()));
+
+    // A later configuration change must not move either schedule.
+    c.set_timelock_delay(&admin, &10_u64);
+
+    let action_a = c.get_queued_action(&id_a);
+    let action_b = c.get_queued_action(&id_b);
+    assert_eq!(action_a.executable_at, 1_100);
+    assert_eq!(action_b.executable_at, 1_500);
+
+    // The first action is executable at its own time even though the
+    // current delay would have allowed it much earlier.
+    env.ledger().set_timestamp(1_099);
+    assert!(c.try_execute_action(&admin, &id_a).is_err());
+
+    env.ledger().set_timestamp(1_100);
+    c.execute_action(&admin, &id_a);
+    assert_eq!(c.get_treasury(), treasury);
+
+    // The second action still waits for its original schedule.
+    assert!(c.try_execute_action(&admin, &id_b).is_err());
+    env.ledger().set_timestamp(1_500);
+    c.execute_action(&admin, &id_b);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #236 — platform fee actions validated at queue time
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_236_excessive_platform_fee_rejected_at_queue_without_id() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+
+    let next_id_before = c.get_next_action_id();
+    let res = c.try_queue_action(
+        &admin,
+        &types::TimelockedAction::SetPlatformFeeBps(types::MAX_PLATFORM_FEE_BPS + 1),
+    );
+    assert!(res.is_err());
+    // No action ID was allocated for the rejected action.
+    assert_eq!(c.get_next_action_id(), next_id_before);
+
+    // The maximum permitted rate can be queued.
+    let id = c.queue_action(
+        &admin,
+        &types::TimelockedAction::SetPlatformFeeBps(types::MAX_PLATFORM_FEE_BPS),
+    );
+    assert_eq!(id, next_id_before);
+    assert_eq!(c.get_next_action_id(), next_id_before + 1);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #237 — commitment expiry getter
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_237_commitment_expiry_getter_matches_reveal_boundary() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    StellarAssetClient::new(&env, &token_id).mint(&payer, &1_000);
+    env.ledger().set_timestamp(1_000);
+
+    // Default duration is exposed by the getter.
+    let default_expiry = c.get_commitment_expiry();
+    assert_eq!(default_expiry, types::DEFAULT_COMMITMENT_EXPIRY);
+
+    let id = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
+    let commitment = BytesN::from_array(&env, &[7u8; 32]);
+    c.commit_payment(&payer, &id, &commitment, &100_i128);
+
+    // At the boundary the commitment is still revealable.
+    env.ledger().set_timestamp(1_000 + default_expiry);
+    c.reveal_payment(&payer, &id, &Bytes::from_array(&env, &[1u8; 32]));
+
+    // A changed duration is reflected by the getter and used by reveal.
+    let new_expiry = 50_u64;
+    c.set_commitment_expiry(&admin, &new_expiry);
+    assert_eq!(c.get_commitment_expiry(), new_expiry);
+
+    let id2 = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
+    let now = env.ledger().timestamp();
+    c.commit_payment(&payer, &id2, &commitment, &100_i128);
+
+    env.ledger().set_timestamp(now + new_expiry + 1);
+    assert!(c
+        .try_reveal_payment(&payer, &id2, &Bytes::from_array(&env, &[1u8; 32]))
+        .is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Issue #239 — reminders require an existing invoice
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_239_reminder_for_missing_invoice_creates_nothing() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    env.ledger().set_timestamp(1_000);
+
+    let missing_id = 999_u64;
+    assert!(c.try_set_reminder(&creator, &missing_id, &2_000_u64).is_err());
+    assert!(c.get_reminder(&missing_id).is_none());
+    assert_eq!(c.get_audit_log(&missing_id).len(), 0);
+
+    // An eligible invoice can still be scheduled and triggered once when due.
+    let id = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
+    c.set_reminder(&creator, &id, &2_000_u64);
+    assert!(c.get_reminder(&id).is_some());
+
+    assert!(c.try_trigger_reminder(&id).is_err());
+    env.ledger().set_timestamp(2_000);
+    c.trigger_reminder(&id);
+    assert!(c.try_trigger_reminder(&id).is_err());
+}
