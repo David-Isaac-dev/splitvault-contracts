@@ -4,7 +4,7 @@
 //! events. Metrics are stored per creator so the frontend can render a
 //! dashboard without scanning the full invoice history.
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol};
 
 #[contracttype]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -199,7 +199,7 @@ impl DashboardContract {
     }
 
     /// Record a refunded invoice for `creator`.
-    pub fn record_refunded(env: Env, creator: Address) {
+    pub fn record_refunded(env: Env, creator: Address, amount: i128) {
         require_authorized_split_contract(&env, &env.current_contract_address());
 
         let key = creator_dashboard_key(&creator);
@@ -221,7 +221,7 @@ impl DashboardContract {
             .expect("refunded_count overflow");
         dashboard.refunded_volume = dashboard
             .refunded_volume
-            .checked_add(total)
+            .checked_add(amount)
             .expect("refunded_volume overflow");
         env.storage().persistent().set(&key, &dashboard);
 
@@ -232,5 +232,20 @@ impl DashboardContract {
     /// Read the aggregated dashboard for `creator`.
     pub fn get_creator_dashboard(env: Env, creator: Address) -> CreatorDashboard {
         Self::load(&env, &creator)
+    }
+
+    /// Load the aggregated dashboard for `creator`, defaulting to empty metrics.
+    fn load(env: &Env, creator: &Address) -> CreatorDashboard {
+        env.storage()
+            .persistent()
+            .get(&creator_dashboard_key(creator))
+            .unwrap_or(CreatorDashboard {
+                invoice_count: 0,
+                total_volume: 0,
+                released_count: 0,
+                refunded_count: 0,
+                released_volume: 0,
+                refunded_volume: 0,
+            })
     }
 }
