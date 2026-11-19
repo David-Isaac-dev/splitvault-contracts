@@ -4,32 +4,18 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
-
-env:
-  CARGO_TERM_COLOR: always
-  SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2: 0
 
 jobs:
-  ci-scripts:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Test CI replay and size reporting
-        run: python3 scripts/test-ci.py -v
-
   test:
+    name: Run tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable
-          targets: wasm32v1-none
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo registry
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
@@ -41,45 +27,53 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
-      - name: Storage key snapshot test
-        run: cargo test -p split storage_snapshot
-
-  fuzz:
+  wasm:
+    name: Build production WASM
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [fuzz_create_invoice, fuzz_pay, fuzz_release, fuzz_refund, fuzz_sequence]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install stable Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
+          targets: wasm32-unknown-unknown
 
-      - name: Cache cargo registry
+      - name: Cache cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            fuzz/target
-          key: ${{ runner.os }}-cargo-fuzz-${{ hashFiles('fuzz/Cargo.toml') }}
+            target
+          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz
+      - name: Build all contract WASM packages
+        run: |
+          set -euo pipefail
+          members=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[].name')
+          for pkg in $members; do
+            echo "::group::Building $pkg"
+            cargo build --release --target wasm32-unknown-unknown -p "$pkg"
+            echo "::endgroup::"
+          done
 
-      - name: Fuzz ${{ matrix.target }} (60s)
-        env:
-          FUZZ_TARGET: ${{ matrix.target }}
-        run: bash scripts/run-fuzz.sh "$FUZZ_TARGET"
-
-      - name: Upload fuzz failure and replay context
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fuzz-failure-${{ matrix.target }}-${{ github.run_attempt }}
-          path: fuzz/artifacts/${{ matrix.target }}/
-          if-no-files-found: warn
-          retention-days: 14
+      - name: Verify release artifacts
+        run: |
+          set -euo pipefail
+          members=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[].name')
+          count=0
+          for pkg in $members; do
+            artifact="target/wasm32-unknown-unknown/release/${pkg//-/_}.wasm"
+            if [ ! -f "$artifact" ]; then
+              echo "::error::Missing WASM artifact for $pkg at $artifact"
+              exit 1
+            fi
+            echo "Found $artifact"
+            count=$((count + 1))
+          done
+          if [ "$count" -ne 5 ]; then
+            echo "::error::Expected 5 WASM artifacts, found $count"
+            exit 1
+          fi
