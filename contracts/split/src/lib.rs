@@ -72,6 +72,9 @@ mod fuzz_tests;
 #[cfg(test)]
 mod storage_snapshot;
 
+#[cfg(test)]
+mod estimate_compute_tests;
+
 mod storage;
 mod storage_keys;
 
@@ -16762,6 +16765,108 @@ impl SplitContract {
             ((invoice.funded * 10_000) / total) as u32
         }
     }
+
+    /// Issue #246: Get the number of distinct payers for an invoice.
+    ///
+    /// This is the authoritative payer count used by `estimate_compute` for the
+    /// `refund` operation when only an invoice ID is supplied.
+    pub fn get_invoice_payer_count(env: Env, invoice_id: u64) -> u32 {
+        // Ensure the invoice exists (panics otherwise).
+        let _invoice = load_invoice(&env, invoice_id);
+        count_distinct_payers(&env, invoice_id)
+    }
+
+    /// Issue #246: Estimate the compute cost of an operation.
+    ///
+    /// When `invoice_id` is supplied, the estimate is derived from the actual
+    /// invoice state. In particular the `refund` operation uses the number of
+    /// distinct payers recorded for the invoice (aggregated across payment
+    /// shards) rather than assuming a single payer, so the estimate matches the
+    /// explicit `payer_count` path for equivalent inputs.
+    pub fn estimate_compute(
+        env: Env,
+        operation: Symbol,
+        invoice_id: Option<u64>,
+        recipient_count: Option<u32>,
+        payer_count: Option<u32>,
+    ) -> ComputeEstimate {
+        let mut recipients: u32 = recipient_count.unwrap_or(0);
+        let mut payers: u32 = payer_count.unwrap_or(0);
+
+        if let Some(id) = invoice_id {
+            let invoice = load_invoice(&env, id);
+            if recipient_count.is_none() {
+                recipients = invoice.recipients.len();
+            }
+            if payer_count.is_none() {
+                // Issue #246: derive the payer count from actual payer records
+                // instead of assuming a single payer.
+                payers = count_distinct_payers(&env, id);
+            }
+        }
+
+        // Issue #298: instruction cost model.
+        let instructions: u64 = if operation == symbol_short!("refund") {
+            INSTRUCTIONS_BASE
+                .saturating_add(INSTRUCTIONS_PER_RECIPIENT.saturating_mul(payers as u64))
+        } else {
+            INSTRUCTIONS_BASE
+                .saturating_add(INSTRUCTIONS_PER_RECIPIENT.saturating_mul(recipients as u64))
+                .saturating_add(INSTRUCTIONS_PER_SHARD.saturating_mul(SHARD_COUNT))
+        };
+
+        let fee_stroops = instructions
+            .saturating_mul(STROOPS_PER_10K_INSTRUCTIONS)
+            / 10_000;
+
+        ComputeEstimate {
+            operation,
+            recipient_count: recipients,
+            payer_count: payers,
+            estimated_instructions: instructions,
+            estimated_fee_stroops: fee_stroops,
+            within_budget: instructions <= INSTRUCTION_BUDGET_LIMIT,
+        }
+    }
+
+    /// Issue #246: Estimate refund compute from the invoice's actual payer records.
+    ///
+    /// Convenience wrapper around `estimate_compute` for the `refund` operation
+    /// that always derives the payer count from stored payment records.
+    pub fn estimate_refund_compute(env: Env, invoice_id: u64) -> ComputeEstimate {
+        Self::estimate_compute(
+            env,
+            symbol_short!("refund"),
+            Some(invoice_id),
+            None,
+            None,
+        )
+    }
+}
+
+/// Issue #246: Count the distinct payers recorded against an invoice.
+///
+/// Refund work scales with the number of distinct payers, not with the number
+/// of payment records (a payer may contribute several times). Payments are
+/// aggregated across all payment shards, matching the aggregation performed by
+/// `refund()` itself, so the estimate reflects the actual refund workload.
+#[allow(dead_code)]
+fn count_distinct_payers(env: &Env, invoice_id: u64) -> u32 {
+    let mut payers: Vec<Address> = Vec::new(env);
+    for shard_id in 0..SHARD_COUNT {
+        if let Some(shard_payments) = env
+            .storage()
+            .persistent()
+            .get::<(Symbol, u64, u64), Vec<Payment>>(&pay_shard_key(invoice_id, shard_id))
+        {
+            for payment in shard_payments.iter() {
+                if !payers.iter().any(|p| p == payment.payer) {
+                    payers.push_back(payment.payer.clone());
+                }
+            }
+        }
+    }
+    payers.len()
 }
 
 /// Move a finalised invoice from hot storage to cold archival storage.

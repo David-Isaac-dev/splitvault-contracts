@@ -88,4 +88,49 @@ The table below lists measured typical resource consumption ranges across suppor
 
 1. **Host metering differences**: Native Rust unit test environments measure host execution budget, which correlates closely with on-chain Soroban WASM VM execution.
 2. **State Isolation**: `estimate_compute` is strictly read-only and does not mutate persistent storage.
-3. **Accuracy Guarantee**: All operation estimates remain within **10%** of actual measured host execution costs.
+3. **Accuracy Is a Measured Property**: `estimate_compute` does not carry an unconditional accuracy guarantee. Any accuracy claim is scoped to the recorded results of the calibration procedure below, and clients should reproduce that procedure against their own SDK version and fixtures before relying on a specific error bound.
+
+---
+
+## 6. Accuracy Measurement Procedure
+
+The accuracy of `estimate_compute` is established by measurement, not assertion. To assess confidence in a fee quote, run the following procedure and record every field; the resulting table is the only basis for an accuracy claim.
+
+### 6.1 Recorded Fields
+
+For each supported benchmark, record:
+
+1. **SDK version**: the exact `soroban-sdk` version (and Rust toolchain version) used to build and run the benchmark.
+2. **Fixture inputs**: the `operation` symbol and the full `params` map passed to `estimate_compute`, including recipient/payer counts and any configuration flags.
+3. **Observed host costs**: the actual `cpu_insns` and `mem_bytes` consumed by the corresponding real contract operation, as reported by the host execution budget during the benchmark.
+4. **Estimate error**: the estimated values returned by `estimate_compute` for the same fixture, and the error for each dimension:
+   - `cpu_error_pct = |estimated_cpu_insns - observed_cpu_insns| / observed_cpu_insns * 100`
+   - `mem_error_pct = |estimated_mem_bytes - observed_mem_bytes| / observed_mem_bytes * 100`
+   - `fee_error_pct = |estimated_fee_stroops - observed_fee_stroops| / observed_fee_stroops * 100`
+
+### 6.2 Benchmark Matrix
+
+Run at least one fixture per supported operation, and cover the range boundaries used in Section 3:
+
+| Operation | Fixture inputs to record |
+|---|---|
+| `create_invoice` | 1 recipient; 20 recipients; with and without optional config flags |
+| `pay` | 1 recipient; 20 recipients; partial and fully-funded invoice (auto-release path) |
+| `release` | 1 recipient; 20 recipients |
+| `refund` | 1 payer; 10 payers |
+| `open_dispute` | single `invoice_id` |
+| `approve_release` | single `invoice_id` |
+
+### 6.3 Procedure
+
+1. Build the contract and benchmark harness with the recorded SDK version.
+2. For each fixture, execute the real operation and capture the observed host `cpu_insns` and `mem_bytes` from the execution budget.
+3. Call `estimate_compute` with the identical `operation` and `params` and capture the returned `ComputeEstimate`.
+4. Compute the error percentages from Section 6.1 and record them alongside the SDK version and fixture inputs.
+5. Re-run the procedure whenever the SDK version, contract code, or fixture set changes; prior accuracy claims do not carry over.
+
+### 6.4 Scope of Accuracy Claims
+
+- An accuracy claim applies only to the SDK version, fixtures, and operations recorded in the measurement table.
+- Results outside the recorded fixture set (different recipient counts, different flags, different SDK versions) are unmeasured and carry no stated error bound.
+- Clients should treat the recorded maximum error per operation as the confidence bound for their quotes, and re-measure when upgrading the SDK or changing inputs materially.
