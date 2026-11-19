@@ -149,3 +149,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 
 <!-- handsoff-issue-64 -->
 - #64: Silent Payout Loss in `reveal_confidential_payment` Due to Omission of Shard Storage
+
+<!-- handsoff-issue-213 -->
+- #213: Provide a factory address prediction helper
