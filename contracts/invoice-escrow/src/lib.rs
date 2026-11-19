@@ -14,6 +14,19 @@
 //! admin can cancel the pending proposal at any time via
 //! [`InvoiceEscrowContract::cancel_transfer`]. This prevents accidental or
 //! malicious lock-out by ensuring the new admin actively confirms the transfer.
+//!
+//! # Blacklist Recovery Policy
+//!
+//! A blacklist entry that has been finalised with `upheld == true` blocks the
+//! payer from depositing. Because finalisation is terminal, an administrative
+//! error (or an obsolete ban) can only be corrected through
+//! [`InvoiceEscrowContract::retire_blacklist`]. Retirement is admin-only, only
+//! applies to entries that are finalised and upheld, and restores the payer's
+//! eligibility (`is_payer_blacklisted` returns `false`). The prior outcome is
+//! preserved: the entry is marked `retired` and kept in persistent storage, and
+//! a retirement record is appended to the payer's history so the original
+//! upheld decision remains auditable.
+=======
 
 #![no_std]
 
@@ -63,6 +76,11 @@ fn blacklist_key(payer: &Address) -> (Symbol, Address) {
     (symbol_short!("blacklist"), payer.clone())
 }
 
+/// Persistent storage: append-only history of retired blacklist outcomes.
+fn blacklist_history_key(payer: &Address) -> (Symbol, Address) {
+    (symbol_short!("bl_hist"), payer.clone())
+}
+
 /// Instance storage: reentrancy lock flag.
 fn lock_key() -> Symbol {
     symbol_short!("lock")
@@ -86,6 +104,16 @@ const MIN_DEPOSIT_AMOUNT: i128 = 1_000_000;
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// Load the stored admin and enforce host-level authorization.
+///
+/// Authorization is enforced by the host via [`Address::require_auth`] on the
+/// stored admin address. A caller that is not the admin therefore fails with a
+/// host authorization error (the invocation aborts) rather than a typed
+/// [`Error::NotAdmin`] value. Callers that need a typed error must check the
+/// admin address themselves before invoking this helper.
+///
+/// # Panics
+/// Panics with `"not initialized"` if the contract has not been initialized.
 fn require_admin(env: &Env) -> Address {
     let admin: Address = env
         .storage()
@@ -154,11 +182,18 @@ fn emit_admin_transfer_cancelled(env: &Env, admin: &Address, cancelled: &Address
     );
 }
 
-/// Topics: `(escrow, created, id)` — Data: `(creator, total_amount, deadline)`
-fn emit_invoice_created(env: &Env, id: u64, creator: &Address, total: i128, deadline: u64) {
+/// Topics: `(escrow, created, id)` — Data: `(creator, token, total_amount, deadline)`
+fn emit_invoice_created(
+    env: &Env,
+    id: u64,
+    creator: &Address,
+    token: &Address,
+    total: i128,
+    deadline: u64,
+) {
     env.events().publish(
         (symbol_short!("escrow"), symbol_short!("created"), id),
-        (creator.clone(), total, deadline),
+        (creator.clone(), token.clone(), total, deadline),
     );
 }
 
@@ -207,6 +242,14 @@ fn emit_blacklist_finalised(env: &Env, payer: &Address, upheld: bool) {
     env.events().publish(
         (symbol_short!("blacklist"), symbol_short!("bl_fin")),
         (payer.clone(), upheld),
+    );
+}
+
+/// Topics: `(blacklist, bl_ret)` — Data: `(payer, reason_hash, ledger)`
+fn emit_blacklist_retired(env: &Env, payer: &Address, reason_hash: &BytesN<32>) {
+    env.events().publish(
+        (symbol_short!("blacklist"), symbol_short!("bl_ret")),
+        (payer.clone(), reason_hash.clone(), env.ledger().sequence()),
     );
 }
 
@@ -401,7 +444,7 @@ impl InvoiceEscrowContract {
             status: EscrowStatus::Pending,
         };
         save_invoice(&env, id, &invoice);
-        emit_invoice_created(&env, id, &creator, total_amount, deadline);
+        emit_invoice_created(&env, id, &creator, &invoice.token, total_amount, deadline);
         Ok(id)
     }
 
@@ -647,8 +690,14 @@ impl InvoiceEscrowContract {
     /// this call does not transfer tokens, avoiding unbounded iteration over
     /// unknown payers.
     ///
+    /// # Authorization
+    /// The admin is authenticated by the host via `require_auth` on the stored
+    /// admin address. A non-admin caller therefore fails with a host
+    /// authorization error (the invocation aborts) rather than a typed
+    /// [`Error::NotAdmin`] value.
+    ///
     /// # Errors
-    /// * [`Error::NotAdmin`]      — Caller is not the admin.
+    /// * [`Error::NotInitialized`]  — Contract has not been initialized.
     /// * [`Error::InvoiceNotFound`] — Unknown invoice ID.
     /// * [`Error::InvalidStatus`]   — Invoice not in a cancellable state.
     pub fn cancel_invoice(env: Env, invoice_id: u64) -> Result<(), Error> {
@@ -853,6 +902,77 @@ impl InvoiceEscrowContract {
         Ok(())
     }
 
+    /// Retire a finalised, upheld blacklist entry (administrative recovery).
+    ///
+    /// This is the documented recovery path for mistaken or obsolete bans.
+    /// Only the admin may call it, and only for entries that are already
+    /// finalised with `upheld == true`. The active ban is cleared so
+    /// [`Self::is_payer_blacklisted`] returns `false`, while the prior outcome
+    /// is preserved: the entry is marked `retired` (keeping `upheld` and
+    /// `reason_hash`) and a retirement record is appended to the payer's
+    /// history.
+    ///
+    /// # Arguments
+    /// * `admin` — Contract admin (must authenticate).
+    /// * `payer` — The blacklisted payer whose ban is being retired.
+    ///
+    /// # Events
+    /// Emits `("blacklist", "bl_ret")` with `(payer, reason_hash, ledger)`.
+    ///
+    /// # Errors
+    /// * [`Error::NotInitialized`] if contract is not initialized.
+    /// * [`Error::NotAdmin`] if caller is not the admin.
+    /// * [`Error::NotBlacklisted`] if payer has no blacklist entry.
+    /// * [`Error::InvalidStatus`] if the entry is not finalised and upheld.
+    pub fn retire_blacklist(
+        env: Env,
+        admin: Address,
+        payer: Address,
+    ) -> Result<(), Error> {
+        if !env.storage().instance().has(&admin_key()) {
+            return Err(Error::NotInitialized);
+        }
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&admin_key())
+            .unwrap();
+        if admin != stored_admin {
+            return Err(Error::NotAdmin);
+        }
+        admin.require_auth();
+
+        let mut entry: BlacklistEntry = env
+            .storage()
+            .persistent()
+            .get(&blacklist_key(&payer))
+            .ok_or(Error::NotBlacklisted)?;
+
+        if !entry.finalised || !entry.upheld {
+            return Err(Error::InvalidStatus);
+        }
+
+        // Preserve the prior outcome in append-only history.
+        let mut history: Vec<BlacklistEntry> = env
+            .storage()
+            .persistent()
+            .get(&blacklist_history_key(&payer))
+            .unwrap_or_else(|| Vec::new(&env));
+        history.push_back(entry.clone());
+        env.storage()
+            .persistent()
+            .set(&blacklist_history_key(&payer), &history);
+
+        // Clear the active ban while keeping the outcome on record.
+        entry.retired = true;
+        env.storage()
+            .persistent()
+            .set(&blacklist_key(&payer), &entry);
+
+        emit_blacklist_retired(&env, &payer, &entry.reason_hash);
+        Ok(())
+    }
+
     /// Pay an invoice — delegates to [`Self::deposit`] which checks the
     /// payer blacklist before processing.
     ///
@@ -925,10 +1045,30 @@ impl InvoiceEscrowContract {
     }
 
     /// Return `true` if the payer is blacklisted with a finalised and upheld entry.
+    ///
+    /// Retired entries no longer count as an active ban.
     pub fn is_payer_blacklisted(env: Env, payer: Address) -> bool {
         env.storage()
             .persistent()
             .get::<_, BlacklistEntry>(&blacklist_key(&payer))
-            .map_or(false, |entry| entry.finalised && entry.upheld)
+            .map_or(false, |entry| entry.finalised && entry.upheld && !entry.retired)
+    }
+
+    /// Return the effective last ledger on which an appeal is accepted.
+    ///
+    /// The returned value is `ban_ledger + APPEAL_WINDOW_LEDGERS`. An appeal
+    /// submitted at exactly this ledger is accepted; one submitted at
+    /// `returned + 1` is rejected with [`Error::AppealWindowExpired`]. This
+    /// matches the comparison performed by [`Self::submit_appeal`].
+    ///
+    /// # Errors
+    /// * [`Error::NotBlacklisted`] if the payer has no blacklist entry.
+    pub fn get_appeal_deadline(env: Env, payer: Address) -> Result<u32, Error> {
+        let entry: BlacklistEntry = env
+            .storage()
+            .persistent()
+            .get(&blacklist_key(&payer))
+            .ok_or(Error::NotBlacklisted)?;
+        Ok(entry.ban_ledger.saturating_add(APPEAL_WINDOW_LEDGERS))
     }
 }

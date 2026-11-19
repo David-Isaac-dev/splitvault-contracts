@@ -36,6 +36,28 @@ pub struct EscrowInvoice {
     pub status: EscrowStatus,
 }
 
+/// Emitted when a new escrow invoice is created.
+///
+/// Event topics: `(escrow, created)`
+/// Event data: `(invoice_id, creator, token, amount, deadline)`
+///
+/// The `token` field carries the escrow asset (denomination) so indexers can
+/// distinguish invoices created with different assets from event data alone.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct InvoiceCreatedEvent {
+    /// The ID of the newly created invoice.
+    pub invoice_id: u64,
+    /// The address that created the invoice.
+    pub creator: Address,
+    /// The escrow token (asset) contract address for this invoice.
+    pub token: Address,
+    /// The total amount required to fully fund this invoice.
+    pub amount: i128,
+    /// Unix timestamp after which refunds are permitted if not fully funded.
+    pub deadline: u64,
+}
+
 /// Emitted when the admin initiates a two-step admin authority transfer.
 ///
 /// Event topics: `(escrow, adm_prop)`
@@ -110,6 +132,23 @@ pub struct EscrowReleased {
 /// `APPEAL_WINDOW_LEDGERS` window. After the window closes (or the payer
 /// submits an appeal), the admin calls `finalise_blacklist` with either
 /// `uphold: true` (ban stays) or `uphold: false` (payer reinstated).
+///
+/// ## Retirement lifecycle for upheld entries
+///
+/// Once an entry is finalised with `upheld: true`, `finalise_blacklist`
+/// rejects any further calls. To correct an administrative error or retire
+/// an obsolete ban, the admin uses the separate `retire_blacklist` operation.
+/// Retirement:
+///
+/// - restores the payer's eligibility (the payer is no longer considered
+///   blacklisted by `is_payer_blacklisted`),
+/// - preserves the history of the outcome by recording a
+///   [`BlacklistRetirement`] record (prior upheld outcome, reason hash and
+///   retirement ledger) rather than mutating or deleting the original entry,
+/// - is idempotent-safe: an entry can only be retired once.
+///
+/// Only entries that were finalised with `upheld: true` may be retired;
+/// entries finalised with `upheld: false` already restored eligibility.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct BlacklistEntry {
@@ -128,4 +167,30 @@ pub struct BlacklistEntry {
     pub upheld: bool,
     /// Hash of the reason for blacklisting (provided by admin).
     pub reason_hash: BytesN<32>,
+}
+
+/// History record capturing the retirement of a previously upheld blacklist
+/// entry.
+///
+/// When the admin retires an upheld ban (see [`BlacklistEntry`] docs), the
+/// original entry is left intact and a `BlacklistRetirement` record is stored
+/// so the outcome history is preserved. The payer's eligibility is restored
+/// while the audit trail of the original ban and its retirement remains
+/// queryable.
+///
+/// Event topics: `(escrow, bl_retire)`
+/// Event data: `BlacklistRetirement { payer, prior_upheld, reason_hash, retired_ledger }`
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct BlacklistRetirement {
+    /// The payer whose upheld ban was retired.
+    pub payer: Address,
+    /// The prior upheld outcome of the finalised entry (always `true` for a
+    /// valid retirement, recorded for history).
+    pub prior_upheld: bool,
+    /// Hash of the reason for the original blacklisting, carried over from
+    /// the retired entry to preserve the outcome history.
+    pub reason_hash: BytesN<32>,
+    /// Ledger sequence at which the retirement occurred.
+    pub retired_ledger: u32,
 }
