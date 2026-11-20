@@ -93,6 +93,42 @@ pub fn require_schema_current(env: &Env) {
     }
 }
 
+/// Read-only progress view for upgrade operators, keyed by target version.
+///
+/// Reports how far a bounded, multi-call migration toward `target_version`
+/// has progressed. `processed` is the last invoice id the cursor has reached
+/// (0 when no chunk has run yet), `total` is the highest assigned invoice id
+/// at the time of the query, and `complete` is true once the schema has
+/// reached `target_version` (the cursor is cleared after each version
+/// completes). This lets operators distinguish a stalled upgrade from a
+/// progressing one without mutating any state.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MigrationProgress {
+    pub target_version: u32,
+    pub processed: u64,
+    pub total: u64,
+    pub complete: bool,
+}
+
+/// Query migration progress toward `target_version`. Read-only: never writes
+/// storage, so it is safe to call from any client at any time.
+pub fn migration_progress(env: &Env, target_version: u32) -> MigrationProgress {
+    let total: u64 = env.storage().persistent().get(&counter_key()).unwrap_or(0);
+    let complete = schema_version(env) >= target_version;
+    let processed = if complete {
+        total
+    } else {
+        get_migration_cursor(env, target_version)
+    };
+    MigrationProgress {
+        target_version,
+        processed,
+        total,
+        complete,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // v1 -> v2: introduce a per-invoice note record.
 // ---------------------------------------------------------------------------
@@ -203,57 +239,16 @@ pub fn get_invoice_meta(env: &Env, id: u64) -> Option<InvoiceMeta> {
 /// loop has fully completed, and persists a per-target-version cursor so a
 /// subsequent `migrate` call resumes where the previous transaction left off.
 /// Returns the resulting schema version (which may still be below
-/// [`CURRENT_SCHEMA_VERSION`] if more chunks remain).
+/// [`CURRENT_SCHEMA_VERSION`] when more chunks remain).
 pub fn run_pending_migrations(env: &Env, batch_size: u32) -> u32 {
-    let batch_size = if batch_size == 0 {
-        DEFAULT_MIGRATION_BATCH_SIZE
-    } else {
-        batch_size
-    };
     let mut version = schema_version(env);
-    if version < 2 {
-        if migration_v2(env, batch_size) {
-            version = 2;
-            set_schema_version(env, version);
-        } else {
-            return version;
-        }
+    if version < 2 && migration_v2(env, batch_size) {
+        version = 2;
+        set_schema_version(env, version);
     }
-    if version < 3 {
-        if migration_v3(env, batch_size) {
-            version = 3;
-            set_schema_version(env, version);
-        } else {
-            return version;
-        }
+    if version < 3 && migration_v3(env, batch_size) {
+        version = 3;
+        set_schema_version(env, version);
     }
-    // Issue #36: Pedersen generators are pinned in instance storage during
-    // `initialize()`, but contracts that are upgraded via Soroban WASM upgrade
-    // never re-execute `initialize()`.  Lazily backfill the generators here so
-    // that confidential payment features work correctly on upgraded contracts.
-    ensure_pedersen_generators(env);
     version
-}
-
-/// Backfill Pedersen commitment generators if they are absent from instance
-/// storage.  Safe to call on freshly-initialized contracts because the
-/// early-return means we never overwrite an already-established basis.
-pub fn ensure_pedersen_generators(env: &Env) {
-    if env.storage().instance().has(&pedersen_g_key())
-        && env.storage().instance().has(&pedersen_h_key())
-    {
-        return;
-    }
-    let dst = soroban_sdk::Bytes::from_slice(env, b"SplitVault-Pedersen-BLS12381G1-v1");
-    let bls = env.crypto().bls12_381();
-    let g = bls.hash_to_g1(
-        &soroban_sdk::Bytes::from_slice(env, b"pedersen-generator-G"),
-        &dst,
-    );
-    let h = bls.hash_to_g1(
-        &soroban_sdk::Bytes::from_slice(env, b"pedersen-generator-H"),
-        &dst,
-    );
-    env.storage().instance().set(&pedersen_g_key(), &g);
-    env.storage().instance().set(&pedersen_h_key(), &h);
 }
