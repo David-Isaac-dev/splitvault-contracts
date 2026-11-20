@@ -1,86 +1,87 @@
-//! Fuzz target for issue #520 — ratio validation and high-precision splits.
-//!
-//! Exercises `_create_invoice` and `_release_full` with randomised denominators
-//! and ratio combinations, verifying that the ratio validation and proportional
-//! payout arithmetic never panics or overflows.
-//!
+//! Exercise ratio validation and check that full release conserves the deposit.
 //! Run with: `cargo fuzz run fuzz_ratio_validation`
 
 #![no_main]
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{Address, Env, Vec};
-use split::types::{InvoiceOptions, OverflowBehavior};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    token, Address, Env, Vec,
+};
 use split_fuzz::{client, default_options, fund, offset_timestamp, setup};
 
 #[derive(Debug, Arbitrary)]
 struct Input {
-    denominator: u64,
     n_recipients: u8,
+    cut_points: [u16; 3],
     pay_amount: u64,
 }
 
 fuzz_target!(|input: Input| {
+    const BASIS_POINTS: u32 = 10_000;
     let env = Env::default();
     let (contract_id, token_id) = setup(&env);
     let c = client(&env, &contract_id);
-
-    let n = ((input.n_recipients as usize % 4) + 1).min(4);
-    let denominator = input.denominator.max(2).min(1_000_000);
-
-    let admin = Address::generate(&env);
-    let treasury = Address::generate(&env);
     c.initialize(
-        &admin,
-        &0_i128,
-        &treasury,
+        &Address::generate(&env),
+        &0,
+        &Address::generate(&env),
         &token_id,
-        &0_u32,
+        &0,
         &None,
-        &0_u32,
-        &0_u32,
-        &0_u64,
+        &0,
+        &0,
+        &0,
     );
 
-    let creator = Address::generate(&env);
-    let mut recipients: Vec<Address> = Vec::new(&env);
-    let mut amounts: Vec<i128> = Vec::new(&env);
-    let mut ratios: Vec<u32> = Vec::new(&env);
+    let n = usize::from(input.n_recipients % 3) + 2;
+    let mut cuts = input
+        .cut_points
+        .map(|cut| u32::from(cut) % (BASIS_POINTS - n as u32 + 1));
+    let cuts = &mut cuts[..n - 1];
+    cuts.sort_unstable();
 
-    let base_amount = ((input.pay_amount as i128) / n as i128).max(1);
-    for i in 0..n {
-        recipients.push_back(Address::generate(&env));
-        amounts.push_back(base_amount);
-        let ratio = ((denominator / n as u64) as u32).max(1);
-        ratios.push_back(ratio);
-    }
-
-    let now = env.ledger().timestamp();
-    let deadline = offset_timestamp(now, 86400);
-    env.ledger().set_timestamp(now);
-
+    let total = i128::from(input.pay_amount).max(n as i128);
+    let mut recipients = Vec::new(&env);
+    let mut amounts = Vec::new(&env);
     let mut opts = default_options(&env);
-    opts.ratios = ratios.clone();
-    opts.ext.ratio_denominator = denominator;
+    let mut previous = 0;
+    for i in 0..n {
+        // Offsetting sorted cuts by their index leaves each recipient at least one BPS.
+        let cut = cuts.get(i).map_or(BASIS_POINTS, |cut| cut + i as u32 + 1);
+        opts.ratios.push_back(cut - previous);
+        previous = cut;
+        recipients.push_back(Address::generate(&env));
+        amounts.push_back(total / n as i128 + if i == 0 { total % n as i128 } else { 0 });
+    }
+    opts.ext.ratio_denominator = u64::from(BASIS_POINTS);
 
-    let invoice_id = match c.try_create_invoice(
-        &creator,
-        &recipients,
-        &amounts,
-        &token_id,
-        &deadline,
-        &opts,
-    ) {
-        Ok(Ok(id)) => id,
-        _ => return,
-    };
+    let creator = Address::generate(&env);
+    let deadline = offset_timestamp(env.ledger().timestamp(), 86_400);
+    let invoice_id = c
+        .try_create_invoice(&creator, &recipients, &amounts, &token_id, &deadline, &opts)
+        .expect("normalized ratios should be accepted")
+        .expect("invoice ID should decode");
 
     let payer = Address::generate(&env);
     fund(&env, &token_id, &payer);
-    let total: i128 = amounts.iter().sum();
-    let _ = c.try_pay(&payer, &invoice_id, &total, &0u64, &false, &false, &None);
+    c.try_pay(&payer, &invoice_id, &total, &0, &false, &false, &None)
+        .expect("full payment should release the invoice")
+        .expect("payment result should decode");
 
-    let _ = c.try_release(&invoice_id);
+    let token = token::Client::new(&env, &token_id);
+    let mut allocated = 0;
+    for i in 0..recipients.len() {
+        let balance = token.balance(&recipients.get(i).unwrap());
+        let expected = if i == recipients.len() - 1 {
+            total - allocated
+        } else {
+            total * i128::from(opts.ratios.get(i).unwrap()) / i128::from(BASIS_POINTS)
+        };
+        assert_eq!(balance, expected);
+        allocated += balance;
+    }
+    assert_eq!(allocated, total);
+    assert_eq!(token.balance(&contract_id), 0);
 });

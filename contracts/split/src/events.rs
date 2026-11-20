@@ -26,7 +26,10 @@
 //! dynamically.
 
 use crate::storage_keys::ev_seq_key;
-use crate::types::{DisputeOutcome, FeeSplit, InvoicePhase, InvoiceStatus, OverfundingPolicy, RepScore, TimelockAction};
+use crate::types::{
+    DisputeOutcome, FeeSplit, InvoicePhase, InvoiceStatus, OverfundingPolicy, RepScore,
+    TimelockAction,
+};
 use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, String, Vec};
 
 // ---------------------------------------------------------------------------
@@ -99,7 +102,14 @@ pub fn payment_received(
     let event_seq = next_seq(env, invoice_id);
     env.events().publish(
         (symbol_short!("split"), symbol_short!("paid"), invoice_id),
-        (payer.clone(), amount, token.clone(), tip, current_funded, event_seq),
+        (
+            payer.clone(),
+            amount,
+            token.clone(),
+            tip,
+            current_funded,
+            event_seq,
+        ),
     );
 }
 
@@ -120,7 +130,11 @@ pub fn payment_committed(env: &Env, invoice_id: u64, payer: &Address, commit_led
 pub fn confidential_payment_revealed(env: &Env, invoice_id: u64, payer: &Address) {
     let event_seq = next_seq(env, invoice_id);
     env.events().publish(
-        (symbol_short!("split"), symbol_short!("conf_rev"), invoice_id),
+        (
+            symbol_short!("split"),
+            symbol_short!("conf_rev"),
+            invoice_id,
+        ),
         (payer.clone(), event_seq),
     );
 }
@@ -150,7 +164,12 @@ pub fn surplus_claimed(env: &Env, invoice_id: u64, payer: &Address, amount: i128
 /// contract balance.
 /// Topics: (split, sur_rem, invoice_id)
 /// Data: (recipient, remainder_amount, event_seq)
-pub fn surplus_remainder_credited(env: &Env, invoice_id: u64, recipient: &Address, remainder: i128) {
+pub fn surplus_remainder_credited(
+    env: &Env,
+    invoice_id: u64,
+    recipient: &Address,
+    remainder: i128,
+) {
     let event_seq = next_seq(env, invoice_id);
     env.events().publish(
         (symbol_short!("split"), symbol_short!("sur_rem"), invoice_id),
@@ -204,11 +223,7 @@ pub fn condition_verified(env: &Env, invoice_id: u64, preimage_hash: &BytesN<32>
 /// Data: (deadline, funded, creator)
 pub fn invoice_expired(env: &Env, invoice_id: u64, deadline: u64, funded: i128, creator: &Address) {
     env.events().publish(
-        (
-            symbol_short!("split"),
-            symbol_short!("expired"),
-            invoice_id,
-        ),
+        (symbol_short!("split"), symbol_short!("expired"), invoice_id),
         (deadline, funded, creator.clone()),
     );
 }
@@ -348,7 +363,11 @@ pub fn delegate_revoked(env: &Env, invoice_id: u64, revoker: &Address) {
 /// Data: (delegate, ledger_sequence)
 pub fn pay_delegate_revoked(env: &Env, beneficiary: &Address, delegate: &Address) {
     env.events().publish(
-        (symbol_short!("split"), symbol_short!("pd_revoke"), beneficiary.clone()),
+        (
+            symbol_short!("split"),
+            symbol_short!("pd_revoke"),
+            beneficiary.clone(),
+        ),
         (delegate.clone(), env.ledger().sequence()),
     );
 }
@@ -445,7 +464,11 @@ pub fn invoice_resumed(env: &Env, invoice_id: u64, creator: &Address) {
 /// Data: auto_resume_at
 pub fn invoice_auto_resumed(env: &Env, invoice_id: u64, auto_resume_at: u64) {
     env.events().publish(
-        (symbol_short!("split"), symbol_short!("auto_res"), invoice_id),
+        (
+            symbol_short!("split"),
+            symbol_short!("auto_res"),
+            invoice_id,
+        ),
         auto_resume_at,
     );
 }
@@ -1066,10 +1089,7 @@ pub fn dispute_expired(env: &Env, invoice_id: u64) {
 /// Issue #521: Emitted when the fee recipients list is updated.
 pub fn fee_recipients_updated(env: &Env, recipients: &Vec<FeeSplit>) {
     env.events().publish(
-        (
-            symbol_short!("split"),
-            symbol_short!("fee_rc_up"),
-        ),
+        (symbol_short!("split"), symbol_short!("fee_rc_up")),
         (recipients.clone(),),
     );
 }
@@ -1145,7 +1165,13 @@ pub fn rep_updated(env: &Env, address: &Address, score: &RepScore, computed_scor
 /// Issue #504: Emitted when a payout transfer fails for a recipient during batch release.
 /// Topics: (split, PayoutFailed, invoice_id)
 /// Data: (recipient, amount, reason)
-pub fn payout_failed(env: &Env, invoice_id: u64, recipient: &Address, amount: i128, reason: &String) {
+pub fn payout_failed(
+    env: &Env,
+    invoice_id: u64,
+    recipient: &Address,
+    amount: i128,
+    reason: &String,
+) {
     env.events().publish(
         (
             symbol_short!("split"),
@@ -1313,7 +1339,11 @@ pub fn group_rollback_triggered(env: &Env, group_id: u64, member_count: u32) {
 /// Data: (payer, discount_amount)
 pub fn early_bird_payment(env: &Env, invoice_id: u64, payer: &Address, discount_amount: i128) {
     env.events().publish(
-        (symbol_short!("split"), symbol_short!("ebird_pay"), invoice_id),
+        (
+            symbol_short!("split"),
+            symbol_short!("ebird_pay"),
+            invoice_id,
+        ),
         (payer.clone(), discount_amount),
     );
 }
@@ -1342,11 +1372,7 @@ pub fn creator_cooldown_set(
 /// Data: (amount, treasury)
 pub fn funds_swept(env: &Env, invoice_id: u64, amount: i128, treasury: &Address) {
     env.events().publish(
-        (
-            symbol_short!("split"),
-            symbol_short!("swept"),
-            invoice_id,
-        ),
+        (symbol_short!("split"), symbol_short!("swept"), invoice_id),
         (amount, treasury.clone()),
     );
 }
@@ -1577,12 +1603,7 @@ pub fn co_creator_removed(env: &Env, invoice_id: u64, creator: &Address, co_crea
 /// Emitted when a payer hits the global spending cap for the current ledger window.
 /// Topics: (split, pay_spend_lim, payer)
 /// Data: (window_total, cap, ledger)
-pub fn payer_spend_limit_reached(
-    env: &Env,
-    payer: &Address,
-    window_total: i128,
-    cap: i128,
-) {
+pub fn payer_spend_limit_reached(env: &Env, payer: &Address, window_total: i128, cap: i128) {
     env.events().publish(
         (
             symbol_short!("split"),
@@ -1608,7 +1629,11 @@ pub fn invoice_dispute_raised(
             symbol_short!("inv_d_rsd"),
             invoice_id,
         ),
-        (disputer.clone(), reason_hash.clone(), env.ledger().sequence()),
+        (
+            disputer.clone(),
+            reason_hash.clone(),
+            env.ledger().sequence(),
+        ),
     );
 }
 
@@ -1640,7 +1665,6 @@ pub fn cosigner_threshold_reached(env: &Env, invoice_id: u64) {
         env.ledger().sequence(),
     );
 }
-
 
 /// Issue #503: Emitted when admin updates the per-creator open-invoice cap.
 /// Topics: (INVOICE_LIMIT_UPDATED_V, split, inv_lim)
@@ -1682,10 +1706,8 @@ pub fn recipient_account_missing(env: &Env, invoice_id: u64, recipient: &Address
 /// Data:   `parent_id`
 #[allow(dead_code)]
 pub fn child_invoice_unblocked(env: &Env, child_id: u64, parent_id: u64) {
-    env.events().publish(
-        (symbol_short!("chld_ubl"), child_id),
-        parent_id,
-    );
+    env.events()
+        .publish((symbol_short!("chld_ubl"), child_id), parent_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -1767,10 +1789,8 @@ pub fn creator_fee_collected(env: &Env, invoice_id: u64, creator: &Address, fee_
 /// Topics: `("creator_nom", invoice_id)`
 /// Data:   `(successor)`
 pub fn creator_nominated(env: &Env, invoice_id: u64, successor: &Address) {
-    env.events().publish(
-        (symbol_short!("crtr_nom"), invoice_id),
-        successor.clone(),
-    );
+    env.events()
+        .publish((symbol_short!("crtr_nom"), invoice_id), successor.clone());
 }
 
 /// Emitted when a creator role is accepted and the creator is migrated.
@@ -1778,10 +1798,8 @@ pub fn creator_nominated(env: &Env, invoice_id: u64, successor: &Address) {
 /// Topics: `("creator_mig", invoice_id)`
 /// Data:   `(new_creator)`
 pub fn creator_migrated(env: &Env, invoice_id: u64, new_creator: &Address) {
-    env.events().publish(
-        (symbol_short!("crtr_mig"), invoice_id),
-        new_creator.clone(),
-    );
+    env.events()
+        .publish((symbol_short!("crtr_mig"), invoice_id), new_creator.clone());
 }
 
 // ---------------------------------------------------------------------------
@@ -1819,18 +1837,17 @@ const RECIPIENT_ACCOUNT_MISSING_V: u32 = 1;
 /// Emitted when a contributor withdraws their contribution from a pending invoice.
 pub fn contribution_withdrawn(env: &Env, invoice_id: u64, payer: &Address, amount: i128) {
     env.events().publish(
-        (symbol_short!("split"), symbol_short!("ctb_wdrw"), invoice_id),
+        (
+            symbol_short!("split"),
+            symbol_short!("ctb_wdrw"),
+            invoice_id,
+        ),
         (payer.clone(), amount),
     );
 }
 
 /// Emitted when an admin locks a recipient's share of an invoice.
-pub fn recipient_share_locked(
-    env: &Env,
-    invoice_id: u64,
-    recipient: &Address,
-    admin: &Address,
-) {
+pub fn recipient_share_locked(env: &Env, invoice_id: u64, recipient: &Address, admin: &Address) {
     env.events().publish(
         (symbol_short!("split"), symbol_short!("sh_lock"), invoice_id),
         (recipient.clone(), admin.clone()),
@@ -1855,18 +1872,17 @@ pub fn invoice_phase_changed(
     };
     let event_seq = next_seq(env, invoice_id);
     env.events().publish(
-        (symbol_short!("split"), symbol_short!("phase_chg"), invoice_id),
+        (
+            symbol_short!("split"),
+            symbol_short!("phase_chg"),
+            invoice_id,
+        ),
         (phase_sym(old_phase), phase_sym(new_phase), event_seq),
     );
 }
 
 /// Emitted when an admin unlocks a recipient's share of an invoice.
-pub fn recipient_share_unlocked(
-    env: &Env,
-    invoice_id: u64,
-    recipient: &Address,
-    admin: &Address,
-) {
+pub fn recipient_share_unlocked(env: &Env, invoice_id: u64, recipient: &Address, admin: &Address) {
     env.events().publish(
         (symbol_short!("split"), symbol_short!("sh_unlk"), invoice_id),
         (recipient.clone(), admin.clone()),
@@ -1920,7 +1936,11 @@ pub fn overfunding_triggered(
     surplus: i128,
 ) {
     env.events().publish(
-        (symbol_short!("split"), symbol_short!("overfund"), invoice_id),
+        (
+            symbol_short!("split"),
+            symbol_short!("overfund"),
+            invoice_id,
+        ),
         (payer.clone(), surplus),
     );
 }
@@ -2013,4 +2033,23 @@ mod tests {
             assert_eq!(next_seq(&env, 20), 2);
         });
     }
+}
+
+/// Topics: (split, subscription_cycle_advanced, previous_invoice_id)
+/// Data: (next_invoice_id, cycle_number, billing_deadline)
+pub fn subscription_cycle_advanced(
+    env: &Env,
+    previous_invoice_id: u64,
+    next_invoice_id: u64,
+    cycle_number: u32,
+    billing_deadline: u64,
+) {
+    env.events().publish(
+        (
+            symbol_short!("split"),
+            Symbol::new(env, "subscription_cycle_advanced"),
+            previous_invoice_id,
+        ),
+        (next_invoice_id, cycle_number, billing_deadline),
+    );
 }

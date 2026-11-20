@@ -101,10 +101,56 @@ pub fn admin_changed(env: &Env, new_admin: &Address) {
 /// Topics: (registry, paused)
 /// Data: paused flag
 pub fn pause_changed(env: &Env, paused: bool) {
-    env.events().publish(
-        (symbol_short!("registry"), symbol_short!("paused")),
-        paused,
-    );
+    env.events()
+        .publish((symbol_short!("registry"), symbol_short!("paused")), paused);
+}
+
+// ---------------------------------------------------------------------------
+// Shared removal bookkeeping
+// ---------------------------------------------------------------------------
+
+/// Perform the successful-removal mutation shared by both deregister entry
+/// points: scan the creator's list, rewrite (or drop) it, clear the
+/// duplicate-registration flag, and emit the discovery event.
+///
+/// Callers are responsible for auth and for their own missing-entry semantics
+/// before invoking this helper.
+fn remove_registration(env: &Env, creator: &Address, contract: &Address) {
+    let contracts_key = creator_contracts_key(creator);
+    let registration_check_key = registration_key(creator, contract);
+
+    let contracts: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&contracts_key)
+        .unwrap_or_else(|| Vec::new(env));
+
+    let mut remaining: Vec<Address> = Vec::new(env);
+    let mut i = 0;
+    while i < contracts.len() {
+        let entry = contracts.get_unchecked(i);
+        if entry != *contract {
+            remaining.push_back(entry);
+        }
+        i += 1;
+    }
+
+    if remaining.is_empty() {
+        // Final removal: drop the list entirely so no rent-bearing empty
+        // entry lingers. A later registration reconstructs it fresh.
+        env.storage().persistent().remove(&contracts_key);
+    } else {
+        env.storage().persistent().set(&contracts_key, &remaining);
+        env.storage()
+            .persistent()
+            .extend_ttl(&contracts_key, REGISTRY_MIN_TTL, REGISTRY_MAX_TTL);
+    }
+
+    env.storage()
+        .persistent()
+        .remove(&registration_check_key);
+
+    contract_deregistered(env, creator, contract);
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +188,9 @@ impl Registry {
             .get(&registry_admin_key())
             .expect("not initialized");
         admin.require_auth();
-        env.storage().instance().set(&registry_admin_key(), &new_admin);
+        env.storage()
+            .instance()
+            .set(&registry_admin_key(), &new_admin);
         admin_changed(&env, &new_admin);
     }
 
@@ -157,7 +205,9 @@ impl Registry {
             .get(&registry_admin_key())
             .expect("not initialized");
         admin.require_auth();
-        env.storage().instance().set(&registry_paused_key(), &paused);
+        env.storage()
+            .instance()
+            .set(&registry_paused_key(), &paused);
         pause_changed(&env, paused);
     }
 
@@ -180,9 +230,7 @@ impl Registry {
             .expect("not initialized");
         admin.require_auth();
 
-        let contracts_key = creator_contracts_key(&creator);
         let registration_check_key = registration_key(&creator, &contract);
-
         if !env.storage().persistent().has(&registration_check_key) {
             return;
         }
@@ -208,9 +256,20 @@ impl Registry {
             .persistent()
             .extend_ttl(&contracts_key, REGISTRY_MIN_TTL, REGISTRY_MAX_TTL);
 
+        env.storage().persistent().remove(&registration_check_key);
+
+        let count_key = creator_contract_count_key(&creator);
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get(&count_key)
+            .unwrap_or(contracts.len());
         env.storage()
             .persistent()
-            .remove(&registration_check_key);
+            .set(&count_key, &count.saturating_sub(1));
+        env.storage()
+            .persistent()
+            .extend_ttl(&count_key, REGISTRY_MIN_TTL, REGISTRY_MAX_TTL);
 
         contract_deregistered(&env, &creator, &contract);
     }
@@ -226,9 +285,7 @@ impl Registry {
     pub fn deregister(env: Env, creator: Address, contract: Address) {
         creator.require_auth();
 
-        let contracts_key = creator_contracts_key(&creator);
         let registration_check_key = registration_key(&creator, &contract);
-
         assert!(
             env.storage().persistent().has(&registration_check_key),
             "not registered"
@@ -255,9 +312,20 @@ impl Registry {
             .persistent()
             .extend_ttl(&contracts_key, REGISTRY_MIN_TTL, REGISTRY_MAX_TTL);
 
+        env.storage().persistent().remove(&registration_check_key);
+
+        let count_key = creator_contract_count_key(&creator);
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get(&count_key)
+            .unwrap_or(contracts.len());
         env.storage()
             .persistent()
-            .remove(&registration_check_key);
+            .set(&count_key, &count.saturating_sub(1));
+        env.storage()
+            .persistent()
+            .extend_ttl(&count_key, REGISTRY_MIN_TTL, REGISTRY_MAX_TTL);
 
         contract_deregistered(&env, &creator, &contract);
     }
@@ -294,7 +362,7 @@ impl Registry {
         );
 
         // Enforce per-creator limit using the tracked count.
-        let count: u32 = env
+        let mut contracts: Vec<Address> = env
             .storage()
             .persistent()
             .get(&contracts_key)
@@ -305,6 +373,7 @@ impl Registry {
             "registry limit exceeded"
         );
 
+        let legacy_count = contracts.len();
         contracts.push_back(contract.clone());
 
         env.storage().persistent().set(&contracts_key, &contracts);
@@ -317,10 +386,8 @@ impl Registry {
             .storage()
             .persistent()
             .get(&count_key)
-            .unwrap_or(0);
-        env.storage()
-            .persistent()
-            .set(&count_key, &(count + 1));
+            .unwrap_or(legacy_count);
+        env.storage().persistent().set(&count_key, &(count + 1));
         env.storage()
             .persistent()
             .extend_ttl(&count_key, REGISTRY_MIN_TTL, REGISTRY_MAX_TTL);
@@ -340,26 +407,22 @@ impl Registry {
 
     /// Return the list of contracts registered under `creator`.
     pub fn get_contracts(env: Env, creator: Address) -> Vec<Address> {
-        let count_key = creator_count_key(&creator);
-        let count: u32 = env
+        // The vector is the canonical format and also serves entries written
+        // before the dedicated counter was introduced.
+        let contracts_key = creator_contracts_key(&creator);
+        let contracts: Vec<Address> = env
             .storage()
             .persistent()
-            .get(&count_key)
-            .unwrap_or(0);
-
-        let mut contracts: Vec<Address> = Vec::new(&env);
-        for index in 0..count {
-            let key = creator_contract_key(&creator, index);
-            if let Some(addr) = env.storage().persistent().get::<_, Address>(&key) {
-                contracts.push_back(addr);
-            }
-        }
+            .get(&contracts_key)
+            .unwrap_or_else(|| Vec::new(&env));
 
         // Bump TTL on every read so active registries never expire (#48).
-        if env.storage().persistent().has(&count_key) {
-            env.storage()
-                .persistent()
-                .extend_ttl(&count_key, REGISTRY_MIN_TTL, REGISTRY_MAX_TTL);
+        if env.storage().persistent().has(&contracts_key) {
+            env.storage().persistent().extend_ttl(
+                &contracts_key,
+                REGISTRY_MIN_TTL,
+                REGISTRY_MAX_TTL,
+            );
         }
         contracts
     }
@@ -369,10 +432,17 @@ impl Registry {
     /// Reads the dedicated counter key in O(1) instead of deserializing the
     /// full address vector (#105).
     pub fn get_contract_count(env: Env, creator: Address) -> u32 {
+        let count_key = creator_contract_count_key(&creator);
         env.storage()
             .persistent()
-            .get(&creator_contract_count_key(&creator))
-            .unwrap_or(0)
+            .get(&count_key)
+            .unwrap_or_else(|| {
+                env.storage()
+                    .persistent()
+                    .get::<_, Vec<Address>>(&creator_contracts_key(&creator))
+                    .map(|contracts| contracts.len())
+                    .unwrap_or(0)
+            })
     }
 
     /// Check whether a specific (creator, contract) pair is already registered.
@@ -414,6 +484,63 @@ mod test {
         assert_eq!(contracts.len(), 1);
         assert_eq!(contracts.get_unchecked(0), contract_addr);
         assert_eq!(registry_client.get_contract_count(&creator), 1);
+    }
+
+    #[test]
+    fn test_get_contracts_reads_legacy_vector_entries() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let registry_id = env.register(Registry, ());
+        let client = RegistryClient::new(&env, &registry_id);
+        client.initialize(&admin);
+
+        let creator = Address::generate(&env);
+        let first = Address::generate(&env);
+        let second = Address::generate(&env);
+        env.as_contract(&registry_id, || {
+            env.storage().persistent().set(
+                &creator_contracts_key(&creator),
+                &Vec::from_array(&env, [first.clone(), second.clone()]),
+            );
+        });
+
+        let contracts = client.get_contracts(&creator);
+        assert_eq!(contracts.len(), 2);
+        assert_eq!(contracts.get_unchecked(0), first);
+        assert_eq!(contracts.get_unchecked(1), second);
+        assert_eq!(client.get_contract_count(&creator), 2);
+
+        let third = Address::generate(&env);
+        client.register(&creator, &third);
+        let contracts = client.get_contracts(&creator);
+        assert_eq!(contracts.len(), 3);
+        assert_eq!(contracts.get_unchecked(2), third);
+        assert_eq!(client.get_contract_count(&creator), 3);
+    }
+
+    #[test]
+    fn test_deregistration_updates_count_only_when_removed() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let registry_id = env.register(Registry, ());
+        let client = RegistryClient::new(&env, &registry_id);
+        client.initialize(&admin);
+        let creator = Address::generate(&env);
+        let first = Address::generate(&env);
+        let second = Address::generate(&env);
+
+        client.register(&creator, &first);
+        client.register(&creator, &second);
+        client.deregister_contract(&creator, &first);
+        assert_eq!(client.get_contract_count(&creator), 1);
+
+        client.deregister_contract(&creator, &first);
+        assert_eq!(client.get_contract_count(&creator), 1);
+
+        client.deregister(&creator, &second);
+        assert_eq!(client.get_contract_count(&creator), 0);
     }
 
     #[test]

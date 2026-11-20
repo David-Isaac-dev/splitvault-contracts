@@ -884,6 +884,52 @@ Returns the creator's total lifetime invoice volume (used for fee tier qualifica
 
 ---
 
+### Dashboard creator aggregates
+
+`get_creator_dashboard(creator)` returns lifecycle counts and raw amount sums for
+the creator across registered Split contracts. The counts are unitless and track
+recorded creation, release, and refund events. Each volume adds an integer in
+the unit supplied by Split for that lifecycle event. For a standard
+single-token invoice, these are the token's smallest units. When
+`pay_with_token` swaps an alternative payment asset, the payment is credited
+in the invoice's funding token. Use the credited or settled amount for that
+asset, with its decimals, when presenting the lifecycle.
+
+For example, suppose a creator creates a 10 USDC invoice and a 2 XLM invoice,
+both with seven decimal places. A payer settles the USDC invoice using an
+alternative token that swaps into 10 USDC. Another payer funds 1 XLM of the
+XLM invoice and receives a full refund of that payment.
+
+| Dashboard field | Value | Client presentation |
+|---|---:|---|
+| `invoice_count` | 2 | 2 invoices created |
+| `released_count` | 1 | 1 release |
+| `refunded_count` | 1 | 1 refund |
+| `total_volume` | 120,000,000 | Created volume of 10 USDC and 2 XLM |
+| `released_volume` | 100,000,000 | 10 USDC released |
+| `refunded_volume` | 10,000,000 | 1 XLM refunded |
+
+The raw sum `120,000,000` has no common monetary unit. For mixed assets, use
+invoice and lifecycle data to group amounts by token contract address and scale
+each subtotal using that token's decimals. For invoices that settle in multiple
+recipient assets, use the individual settlement amounts and their token
+addresses to display payouts. The dashboard response alone cannot reconstruct
+those asset subtotals. Clients can always display counts independently.
+
+Split passes its contract address to each ingestion method, and the dashboard
+requires both registration and authorization from that address. Upgrade the
+Split caller and dashboard interface together. A configured Split whose
+dashboard rejects ingestion will fail the enclosing lifecycle call atomically.
+The dashboard admin can use `revoke_split_contract(address)` to remove a single
+registration.
+
+Reads and writes refresh an existing creator aggregate when its remaining
+lifetime falls below half of the refresh target. The target is 240,000 ledgers
+or the network maximum if lower. A lookup must be submitted on-chain for its
+TTL update to persist. An absent creator returns zeroed metrics
+without creating a storage entry. Archived persistent entries follow the
+network's restoration process.
+
 ## Read Functions
 
 ### `get_invoice`

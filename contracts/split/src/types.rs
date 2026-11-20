@@ -980,11 +980,24 @@ pub enum TimelockAction {
 }
 
 /// A queued timelock action with metadata.
+///
+/// Issue #234: `executable_at` is the earliest ledger timestamp at which this
+/// action may be executed. It is computed once, at queue time, from the
+/// timelock delay in effect at that moment, so later changes to the delay do
+/// not retroactively reschedule actions that were already announced.
+///
+/// Records written before this field existed deserialise with
+/// `executable_at == 0`; `execute_action` treats that sentinel as "not
+/// recorded" and falls back to `queued_at + current_delay`, preserving the
+/// legacy behaviour for those entries.
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct QueuedAction {
     pub action: TimelockAction,
     pub queued_at: u64,
+    /// Earliest timestamp at which this action may be executed. `0` means the
+    /// value was not recorded (legacy record) and must be recomputed.
+    pub executable_at: u64,
     pub executed: bool,
 }
 
@@ -1905,7 +1918,6 @@ pub struct PaymentRecord {
     pub amount: i128,
     pub ledger: u32,
 }
-
 
 #[cfg(test)]
 mod tests {
