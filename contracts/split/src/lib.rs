@@ -100,7 +100,8 @@ use types::{
     InvoiceOptions2, InvoicePayment, InvoiceStats, InvoiceStatus, InvoiceTemplate,
     InvoiceTemplateRecord, LegacyInvoice, OverflowBehavior, OverfundingPolicy, Payment,
     PaymentCertificate, PaymentCommitment, PaymentProof, PaymentRecord, PendingAdminAction,
-    ProtocolFeeConfig, QueuedAction, RebateTier, Recipient, RepScore, ResolveAction, ResolveRule,
+    ProtocolFeeConfig, QueuedAction, QueuedActionStatus, RebateTier, Recipient, RepScore,
+    ResolveAction, ResolveRule,
     Role, SimulateReleaseResult, SplitRule, SubscriptionParams, TimelockAction, Tombstone, Tranche,
     TransferRecord, TreasuryRecord, UpgradeProposal,
 };
@@ -5226,6 +5227,33 @@ impl SplitContract {
             &env.current_contract_address(),
         );
         events::action_executed(&env, action_id, &queued.action);
+    }
+
+    /// Look up the status of a queued timelock action by its `action_id`.
+    ///
+    /// Returns `Some(QueuedActionStatus::Pending)` while the action is queued
+    /// and has not yet been executed, and `Some(QueuedActionStatus::Executed)`
+    /// once it has been executed — executed records are retained in storage so
+    /// clients can still reconcile after the fact.
+    ///
+    /// Returns `None` when no record exists for `action_id`. Note that
+    /// [`Self::cancel_action`] **removes** the action record from storage, so a
+    /// cancelled action ID is indistinguishable from one that was never queued
+    /// and also returns `None`. Clients that need to tell cancellation apart
+    /// from "never existed" should watch the `action_cancelled` event.
+    pub fn get_queued_action(env: Env, action_id: u64) -> Option<QueuedActionStatus> {
+        let queued: Option<QueuedAction> = env
+            .storage()
+            .persistent()
+            .get(&timelock_action_key(action_id));
+
+        queued.map(|q| {
+            if q.executed {
+                QueuedActionStatus::Executed
+            } else {
+                QueuedActionStatus::Pending
+            }
+        })
     }
 
     /// Cancel a queued timelock action before it executes. Requires admin auth.

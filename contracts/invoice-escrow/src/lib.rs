@@ -80,6 +80,15 @@ const APPEAL_WINDOW_LEDGERS: u32 = 360;
 /// exhausting refund instruction budgets.
 const MIN_DEPOSIT_AMOUNT: i128 = 1_000_000;
 
+/// Maximum number of payer addresses that may be passed to
+/// [`InvoiceEscrowContract::refund`] in a single call.
+///
+/// Refund work is bounded per call so that instruction budgets stay
+/// predictable. Larger payer sets must be split across multiple calls;
+/// consecutive capped batches are supported because the invoice only
+/// transitions to `Refunded` once every recorded deposit has been returned.
+pub const MAX_REFUND_BATCH: u32 = 50;
+
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
@@ -576,18 +585,29 @@ impl InvoiceEscrowContract {
     /// Legacy invoices marked `Refunded` early can still refund outstanding
     /// deposits.
     ///
+    /// Each call accepts at most [`MAX_REFUND_BATCH`] payer addresses. Larger
+    /// payer sets must be split across consecutive calls; consecutive capped
+    /// batches are supported and each batch is processed independently.
+    ///
     /// # Arguments
     /// * `invoice_id` — Target invoice.
-    /// * `payers`     — List of payer addresses to refund in this call.
+    /// * `payers`     — List of payer addresses to refund in this call. Must
+    ///   contain at most [`MAX_REFUND_BATCH`] entries.
     ///
     /// # Errors
     /// * [`Error::InvoiceNotFound`]    — Unknown invoice ID.
     /// * [`Error::InvalidStatus`]      — Invoice was released or cancelled, or
     ///   was marked refunded and this batch has no outstanding deposits.
     /// * [`Error::DeadlineNotPassed`]  — Deadline has not expired yet.
+    /// * [`Error::RefundBatchTooLarge`] — `payers` exceeds [`MAX_REFUND_BATCH`].
     /// * [`Error::Reentrancy`]         — Reentrant call detected.
     pub fn refund(env: Env, invoice_id: u64, payers: Vec<Address>) -> Result<(), Error> {
         acquire_lock(&env)?;
+
+        if payers.len() > MAX_REFUND_BATCH {
+            release_lock(&env);
+            return Err(Error::RefundBatchTooLarge);
+        }
 
         let mut invoice = match get_invoice(&env, invoice_id) {
             Ok(inv) => inv,
@@ -901,6 +921,24 @@ impl InvoiceEscrowContract {
     }
 
     /// Return the amount a specific payer has deposited toward an invoice.
+    ///
+    /// # Semantics
+    ///
+    /// This getter reports the payer's **recorded contribution** for the
+    /// invoice, which is historical rather than a live outstanding balance:
+    ///
+    /// * **Active / Pending** — the total amount the payer has contributed so
+    ///   far (their outstanding deposit).
+    /// * **Released** — the payer's historical contribution is retained, even
+    ///   though the funds have already been paid out to the creator. The value
+    ///   therefore does *not* represent funds still held in escrow.
+    /// * **Refunded** — the payer's deposit key is removed by
+    ///   [`Self::refund`], so this returns `0` once the payer has been
+    ///   refunded. Payers not yet refunded in a partially refunded invoice
+    ///   still report their recorded contribution.
+    ///
+    /// Use [`Self::get_escrow_balance`] to read the funds currently locked in
+    /// escrow for the invoice.
     pub fn get_deposit(env: Env, invoice_id: u64, payer: Address) -> i128 {
         env.storage()
             .persistent()

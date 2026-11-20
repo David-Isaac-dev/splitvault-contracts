@@ -54,4 +54,7 @@ pub enum Error {
     VelocityLimitExceeded = 22,
     /// Aggregate per-invoice sliding-window intake velocity cap would be exceeded.
     InvoiceVelocityLimitExceeded = 23,
+    /// The payer vector passed to `refund` exceeds `MAX_REFUND_BATCH`; the
+    /// batch is rejected before any transfers are attempted.
+    RefundBatchTooLarge = 24,
 }

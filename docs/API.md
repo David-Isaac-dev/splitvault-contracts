@@ -483,6 +483,13 @@ pub fn refund(env: Env, invoice_id: u64)
 
 Refunds all payers proportionally. Can be called by anyone after `deadline` passes if the invoice is not fully funded (and `refund_grace_secs` has elapsed if set). Emits `invoice_refunded` and per-payer `payer_refunded`.
 
+The payer vector processed per call is bounded by `MAX_REFUND_BATCH` (see
+`contracts/invoice-escrow/src/lib.rs`). A batch at or below the cap succeeds; a
+larger batch is rejected before any transfer or storage work is performed.
+Consecutive capped batches are supported, so a refund with more payers than the
+cap is completed by calling `refund` repeatedly until all payers are settled.
+=======
+
 ### `simulate_release`
 
 ```rust
@@ -759,6 +766,25 @@ pub fn cancel_action(env: Env, admin: Address, action_id: u64)
 
 Cancels a pending timelocked action. Emits `action_cancelled`.
 
+### `get_queued_action`
+
+```rust
+pub fn get_queued_action(env: Env, action_id: u64) -> Option<QueuedAction>
+```
+
+Returns the stored record for `action_id`, allowing clients to reconcile state
+without replaying events. Results:
+
+| Result | Meaning |
+|--------|---------|
+| `Some(action)` with `executed == false` | Pending — queued and not yet executed or cancelled |
+| `Some(action)` with `executed == true` | Executed — the action has already run |
+| `None` | Absent — the ID was never queued, or it was cancelled |
+
+Cancelled IDs are removed from storage, so a cancelled action is indistinguishable
+from an ID that was never queued: both return `None`. Clients that need to
+distinguish cancellation from absence should track `action_cancelled` events.
+
 ---
 
 ## Fee Management
@@ -954,6 +980,26 @@ pub fn get_audit_log(env: Env, id: u64) -> Vec<AuditEntry>
 ```
 
 Returns the ordered list of `{ action, actor, timestamp }` entries for an invoice.
+
+### `get_deposit`
+
+```rust
+pub fn get_deposit(env: Env, invoice_id: u64, payer: Address) -> i128
+```
+
+Returns the recorded deposit for `payer` on `invoice_id`. The value is a
+**historical contribution record**, not an outstanding balance, and its meaning
+depends on the invoice lifecycle state:
+
+| Invoice state | `get_deposit` result | Interpretation |
+|---------------|----------------------|----------------|
+| Active (unfunded / partially funded) | Amount contributed so far | Outstanding contribution; also the amount that would be refunded |
+| Released | Amount contributed at release | Historical contribution only — funds have already been paid out to recipients |
+| Refunded | `0` | The payer key is removed during `refund`, so no record remains |
+
+Clients displaying history should treat a non-zero result on a released invoice
+as a past contribution, not as a claimable balance. On refunded invoices the
+absence of a record (zero) is expected and does not mean the payer never paid.
 
 ### `get_receipt_token`
 

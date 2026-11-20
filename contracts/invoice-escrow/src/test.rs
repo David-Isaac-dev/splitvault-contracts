@@ -604,6 +604,211 @@ fn assert_refund_batches(legacy_refunded: bool) {
     assert_eq!(client.try_refund(&id, &batch2), Err(Ok(Error::InvalidStatus)));
 }
 
+/// #225: A batch of exactly `MAX_REFUND_BATCH` payers is accepted.
+#[test]
+fn test_refund_at_max_batch_succeeds() {
+    let (env, contract_id) = setup();
+    let client = InvoiceEscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    let deposit = 1_000_000;
+    let count = super::MAX_REFUND_BATCH;
+    let total = deposit * (count as i128);
+
+    client.initialize(&admin);
+    let id = client.create_invoice(&creator, &token, &total, &1);
+
+    let mut payers = soroban_sdk::Vec::new(&env);
+    for _ in 0..count {
+        let payer = Address::generate(&env);
+        mint(&env, &token, &admin, &payer, deposit);
+        client.deposit(&payer, &id, &deposit);
+        payers.push_back(payer);
+    }
+    assert_eq!(client.get_invoice(&id).funded_amount, total);
+
+    env.ledger().set_timestamp(2);
+    client.refund(&id, &payers);
+
+    let invoice = client.get_invoice(&id);
+    assert_eq!(invoice.status, EscrowStatus::Refunded);
+    assert_eq!(invoice.funded_amount, 0);
+    assert_eq!(token::Client::new(&env, &token).balance(&contract_id), 0);
+}
+
+/// #225: An oversized batch is rejected before any transfer or storage work.
+#[test]
+fn test_refund_over_max_batch_rejected_without_mutation() {
+    let (env, contract_id) = setup();
+    let client = InvoiceEscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    let deposit = 1_000_000;
+    let count = super::MAX_REFUND_BATCH + 1;
+    let total = deposit * (count as i128);
+
+    client.initialize(&admin);
+    let id = client.create_invoice(&creator, &token, &total, &1);
+
+    let mut payers = soroban_sdk::Vec::new(&env);
+    let mut first_payer = None;
+    for _ in 0..count {
+        let payer = Address::generate(&env);
+        mint(&env, &token, &admin, &payer, deposit);
+        client.deposit(&payer, &id, &deposit);
+        if first_payer.is_none() {
+            first_payer = Some(payer.clone());
+        }
+        payers.push_back(payer);
+    }
+
+    env.ledger().set_timestamp(2);
+    assert_eq!(
+        client.try_refund(&id, &payers),
+        Err(Ok(Error::RefundBatchTooLarge))
+    );
+
+    // Nothing moved and no deposit record was cleared.
+    let invoice = client.get_invoice(&id);
+    assert_eq!(invoice.status, EscrowStatus::Active);
+    assert_eq!(invoice.funded_amount, total);
+    assert_eq!(
+        token::Client::new(&env, &token).balance(&contract_id),
+        total
+    );
+    let first_payer = first_payer.unwrap();
+    assert_eq!(client.get_deposit(&id, &first_payer), deposit);
+    assert_eq!(
+        token::Client::new(&env, &token).balance(&first_payer),
+        0
+    );
+}
+
+/// #225: Consecutive capped batches each succeed; the invoice is only
+/// `Refunded` once every deposit has been returned.
+#[test]
+fn test_refund_consecutive_capped_batches() {
+    let (env, contract_id) = setup();
+    let client = InvoiceEscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    let deposit = 1_000_000;
+    let count = super::MAX_REFUND_BATCH;
+    let total = deposit * (2 * count as i128);
+
+    client.initialize(&admin);
+    let id = client.create_invoice(&creator, &token, &total, &1);
+
+    let mut batch1 = soroban_sdk::Vec::new(&env);
+    let mut batch2 = soroban_sdk::Vec::new(&env);
+    for i in 0..(2 * count) {
+        let payer = Address::generate(&env);
+        mint(&env, &token, &admin, &payer, deposit);
+        client.deposit(&payer, &id, &deposit);
+        if i < count {
+            batch1.push_back(payer);
+        } else {
+            batch2.push_back(payer);
+        }
+    }
+
+    env.ledger().set_timestamp(2);
+    client.refund(&id, &batch1);
+    let invoice = client.get_invoice(&id);
+    assert_eq!(invoice.status, EscrowStatus::Active);
+    assert_eq!(invoice.funded_amount, total - deposit * (count as i128));
+
+    client.refund(&id, &batch2);
+    let invoice = client.get_invoice(&id);
+    assert_eq!(invoice.status, EscrowStatus::Refunded);
+    assert_eq!(invoice.funded_amount, 0);
+    assert_eq!(token::Client::new(&env, &token).balance(&contract_id), 0);
+}
+
+/// #226: At the exact deadline a deposit is still allowed but a refund is not.
+#[test]
+fn test_deposit_and_refund_at_exact_deadline() {
+    let (env, contract_id) = setup();
+    let client = InvoiceEscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    let deposit = 5_000_000;
+
+    mint(&env, &token, &admin, &payer, 2 * deposit);
+    client.initialize(&admin);
+    let deadline = 1_000u64;
+    let id = client.create_invoice(&creator, &token, &(2 * deposit), &deadline);
+
+    env.ledger().set_timestamp(deadline);
+
+    // Deposit at the exact deadline is still valid.
+    client.deposit(&payer, &id, &deposit);
+    assert_eq!(client.get_invoice(&id).funded_amount, deposit);
+
+    // Refund at the exact deadline is rejected.
+    let payers = soroban_sdk::vec![&env, payer.clone()];
+    assert_eq!(
+        client.try_refund(&id, &payers),
+        Err(Ok(Error::DeadlineNotPassed))
+    );
+
+    // One tick later the refund becomes available.
+    env.ledger().set_timestamp(deadline + 1);
+    client.refund(&id, &payers);
+    let invoice = client.get_invoice(&id);
+    assert_eq!(invoice.status, EscrowStatus::Refunded);
+    assert_eq!(invoice.funded_amount, 0);
+    assert_eq!(token::Client::new(&env, &token).balance(&payer), 2 * deposit);
+}
+
+/// #227: `get_deposit` reports contributions while active, retains them after
+/// release, and returns zero once refunded.
+#[test]
+fn test_get_deposit_lifecycle() {
+    let (env, contract_id) = setup();
+    let client = InvoiceEscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    let deposit = 5_000_000;
+
+    client.initialize(&admin);
+
+    // Active: contributions are reported.
+    let payer_active = Address::generate(&env);
+    mint(&env, &token, &admin, &payer_active, deposit);
+    let active_id = client.create_invoice(&creator, &token, &(2 * deposit), &10_000);
+    client.deposit(&payer_active, &active_id, &deposit);
+    assert_eq!(client.get_deposit(&active_id, &payer_active), deposit);
+
+    // Released: contributions are retained as history.
+    let payer_released = Address::generate(&env);
+    mint(&env, &token, &admin, &payer_released, deposit);
+    let released_id = client.create_invoice(&creator, &token, &deposit, &10_000);
+    client.deposit(&payer_released, &released_id, &deposit);
+    assert_eq!(client.get_invoice(&released_id).status, EscrowStatus::Released);
+    assert_eq!(
+        client.get_deposit(&released_id, &payer_released),
+        deposit
+    );
+
+    // Refunded: the payer key is removed.
+    let payer_refunded = Address::generate(&env);
+    mint(&env, &token, &admin, &payer_refunded, deposit);
+    let refunded_id = client.create_invoice(&creator, &token, &(2 * deposit), &1);
+    client.deposit(&payer_refunded, &refunded_id, &deposit);
+    env.ledger().set_timestamp(2);
+    let payers = soroban_sdk::vec![&env, payer_refunded.clone()];
+    client.refund(&refunded_id, &payers);
+    assert_eq!(client.get_invoice(&refunded_id).status, EscrowStatus::Refunded);
+    assert_eq!(client.get_deposit(&refunded_id, &payer_refunded), 0);
+}
+
 #[test]
 fn test_refund_before_deadline_fails() {
     let (env, contract_id) = setup();

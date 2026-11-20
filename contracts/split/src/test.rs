@@ -10288,6 +10288,71 @@ fn test_create_invoice_payment_window_only_one_or_none_ok() {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #235: get_queued_action status lookup
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_get_queued_action_pending_then_executed() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
+
+    let action_id = c.queue_action(&creator, &id, &Symbol::new(&env, "cancel_invoice"));
+
+    // Queued but not yet executed: the entry is present and pending.
+    let queued = c
+        .get_queued_action(&action_id)
+        .expect("queued action should be visible");
+    assert_eq!(queued.action_id, action_id);
+    assert_eq!(queued.invoice_id, id);
+    assert_eq!(queued.status, types::TimelockActionStatus::Pending);
+
+    // Advance past the timelock delay and execute.
+    env.ledger().set_timestamp(queued.executable_at);
+    c.execute_action(&action_id);
+
+    let executed = c
+        .get_queued_action(&action_id)
+        .expect("executed action should remain visible");
+    assert_eq!(executed.status, types::TimelockActionStatus::Executed);
+}
+
+#[test]
+fn test_get_queued_action_cancelled_is_absent() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    let creator = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    env.ledger().set_timestamp(1_000);
+    let id = make_invoice(&env, &c, &creator, &recipient, 100, &token_id, 9_999);
+
+    let action_id = c.queue_action(&creator, &id, &Symbol::new(&env, "cancel_invoice"));
+    assert!(c.get_queued_action(&action_id).is_some());
+
+    c.cancel_action(&creator, &action_id);
+
+    // Cancelled IDs are removed from storage and reported as absent.
+    assert!(c.get_queued_action(&action_id).is_none());
+}
+
+#[test]
+fn test_get_queued_action_unknown_id_is_none() {
+    let (env, contract_id, token_id) = setup_initialized();
+    let c = client(&env, &contract_id);
+
+    env.ledger().set_timestamp(1_000);
+    assert!(c.get_queued_action(&0_u64).is_none());
+    assert!(c.get_queued_action(&42_u64).is_none());
+}
+
+// ---------------------------------------------------------------------------
 // Security tests — Issue #1: Unauthorized Treasury Group Hijacking
 // ---------------------------------------------------------------------------
 

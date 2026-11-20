@@ -990,6 +990,30 @@ pub struct QueuedAction {
     pub executed: bool,
 }
 
+/// Issue #235: Client-facing status of a queued timelock action, as returned
+/// by the `get_queued_action` view.
+///
+/// # Absent and cancelled IDs
+///
+/// This enum deliberately has **no** `Absent` or `Cancelled` variant. The
+/// getter returns `Option<QueuedActionStatus>`:
+///
+/// - `Some(Pending)`  — the action is queued and has not yet been executed.
+/// - `Some(Executed)` — the action was queued and has since been executed.
+/// - `None`           — no action record exists for the given ID. This covers
+///   both IDs that were never queued and IDs whose queued action was
+///   cancelled: `cancel_action` removes the record entirely, so a cancelled
+///   ID is indistinguishable from one that never existed. Clients that need
+///   to tell those two cases apart must track the `cancel_action` event.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum QueuedActionStatus {
+    /// The action is queued and awaiting execution.
+    Pending,
+    /// The action has already been executed.
+    Executed,
+}
+
 /// Full invoice — assembled from InvoiceCore + InvoiceExt + InvoiceExt2.
 /// Never stored directly; use save_invoice / load_invoice helpers in lib.rs.
 #[derive(Clone, Debug)]
