@@ -171,17 +171,33 @@ See [`docs/EVENTS.md`](./EVENTS.md) for the complete event reference.
 
 ## Storage Key Snapshot
 
-Every storage key is XDR-serialised and compared against a committed baseline in `tests/snapshots/storage_keys.json` by the `storage_key_snapshot` test. This prevents accidental key renames or format changes from silently breaking on-chain data compatibility.
+Every storage key is XDR-serialised and compared against a committed baseline in `tests/snapshots/storage_keys.json` by the `storage_key_snapshot` test in `contracts/split/src/storage_snapshot.rs`. This prevents accidental key renames or format changes from silently breaking on-chain data compatibility.
 
-Adding, renaming, or removing any key **intentionally fails the test** — update the baseline and include a migration note in the PR.
+The baseline is a checked-in JSON file so that every expected key is reviewable in code review. The test builds the current key set, serialises each key to XDR (hex), and asserts the result matches the baseline exactly. Any change to an existing key — a rename, a changed symbol, a changed parameter encoding — makes the test fail, which is the intended guard.
 
-```bash
-# Run the snapshot test
-cargo test -p split storage_snapshot
+Adding, renaming, or removing any key **intentionally fails the test**. To update the baseline after an intentional key change:
 
-# Update the baseline after an intentional key change
-cargo test -p split storage_snapshot 2>&1 \
-  | grep -A 9999 "EXPECTED (generated)" \
-  | tail -n +2 | head -n -1 \
-  > tests/snapshots/storage_keys.json
-```
+1. Run the snapshot test and confirm the failure is the change you intended:
+
+   ```bash
+   cargo test -p split storage_snapshot
+   ```
+
+2. Regenerate the baseline from the test's generated output. The test prints the full expected JSON between `EXPECTED (generated)` and `END EXPECTED` markers:
+
+   ```bash
+   cargo test -p split storage_snapshot 2>&1 \
+     | sed -n '/EXPECTED (generated)/,/END EXPECTED/p' \
+     | sed '1d;$d' \
+     > tests/snapshots/storage_keys.json
+   ```
+
+3. Review the diff in `tests/snapshots/storage_keys.json` — every changed line must correspond to the intended key change.
+
+4. Re-run the test to confirm it passes:
+
+   ```bash
+   cargo test -p split storage_snapshot
+   ```
+
+5. Include a migration note in the PR describing the key change and its on-chain impact.
