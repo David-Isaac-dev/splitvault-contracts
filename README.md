@@ -186,3 +186,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 
 <!-- handsoff-issue-257 -->
 - #257: Specify the recipient of rounding residue in fee splits
+
+<!-- handsoff-issue-258 -->
+- #258: Document and test canonical recipient sorting across address kinds
