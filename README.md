@@ -180,3 +180,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 
 <!-- handsoff-issue-253 -->
 - #253: Make recipient invoice pagination bound storage reads
+
+<!-- handsoff-issue-254 -->
+- #254: Widen long-lived creator rating accumulators
