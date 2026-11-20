@@ -183,3 +183,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 
 <!-- handsoff-issue-256 -->
 - #256: Preserve solvable fee quotes at large amounts
+
+<!-- handsoff-issue-257 -->
+- #257: Specify the recipient of rounding residue in fee splits
