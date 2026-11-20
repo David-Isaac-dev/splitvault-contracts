@@ -105,7 +105,10 @@ pub fn assert_recipients_have_trustlines(
 pub const BASIS_POINTS_TOTAL: u32 = 10_000;
 
 pub fn assert_bps_sum(values: &[u32]) -> Result<(), ContractError> {
-    let sum: u32 = values.iter().copied().fold(0u32, |acc, v| acc.saturating_add(v));
+    let sum: u32 = values
+        .iter()
+        .copied()
+        .fold(0u32, |acc, v| acc.saturating_add(v));
     assert_bps_total(sum)
 }
 
@@ -252,17 +255,11 @@ mod tests {
             assert_bps_sum(&[3_000u32, 3_000]),
             Err(ContractError::InvalidRatioSum)
         );
-        assert_eq!(
-            assert_bps_sum(&[0u32]),
-            Err(ContractError::InvalidRatioSum)
-        );
+        assert_eq!(assert_bps_sum(&[0u32]), Err(ContractError::InvalidRatioSum));
         assert_eq!(
             assert_bps_sum(&[10_001u32]),
             Err(ContractError::InvalidRatioSum)
         );
-        assert_eq!(
-            assert_bps_sum(&[]),
-            Err(ContractError::InvalidRatioSum)
-        );
+        assert_eq!(assert_bps_sum(&[]), Err(ContractError::InvalidRatioSum));
     }
 }

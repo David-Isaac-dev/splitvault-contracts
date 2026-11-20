@@ -5,41 +5,86 @@ on:
     branches: [main]
 
 env:
-  CARGO_TERM_COLOR: always
+  CARGO_TERM_COLOR: never
+  SOROBAN_SDK_BUILD_SYSTEM_SUPPORTS_SPEC_SHAKING_V2: 0
 
 jobs:
   budget:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly-2024-08-01
-          targets: wasm32-unknown-unknown
+          toolchain: stable
+          targets: wasm32v1-none
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          key: ${{ runner.os }}-compute-budget-1.100.0-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install stellar-cli
+        run: cargo install --locked stellar-cli --version 28.1.0
+
+      - name: Install stellar-cli
+        shell: bash
+        run: |
+          curl -fsSL https://github.com/stellar/stellar-cli/releases/download/v25.2.0/stellar-cli-25.2.0-x86_64-unknown-linux-gnu.tar.gz |
+            tar -xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
 
       - name: Build contracts
+        run: stellar contract build --package split
+
+      - name: Check out size baseline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .wasm-size-base
+          persist-credentials: false
+
+      - name: Build baseline contracts
+        working-directory: .wasm-size-base
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/wasm-size-base-target
         run: cargo build --release --target wasm32-unknown-unknown
+
+      - name: Report release WASM sizes
+        env:
+          BASELINE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASELINE_TARGET_DIR: ${{ runner.temp }}/wasm-size-base-target
+        run: |
+          python3 scripts/wasm-size-report.py \
+            --baseline-root .wasm-size-base \
+            --baseline-target-dir "$BASELINE_TARGET_DIR" \
+            --baseline-sha "$BASELINE_SHA" | tee wasm-size-report.md
+          cat wasm-size-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload release WASM size report
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-wasm-sizes
+          path: wasm-size-report.md
 
       - name: Run compute budget estimation
         id: budget
+        shell: bash
         run: |
           # Run the estimation test that checks all functions against the budget limit
           cargo test --package split -- compute_budget --nocapture 2>&1 | tee budget_output.txt
-          echo "budget_output<<EOF" >> $GITHUB_OUTPUT
-          cat budget_output.txt >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          {
+            echo "budget_output<<EOF"
+            cat budget_output.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Generate budget table
         id: table
@@ -50,9 +95,10 @@ jobs:
           for fn in create_invoice pay release get_invoice get_stats; do
             TABLE+="| \`$fn\` | see COMPUTE_BUDGETS.md | | | ✅ |\n"
           done
-          echo "table=$TABLE" >> $GITHUB_OUTPUT
+          echo "table=$TABLE" >> "$GITHUB_OUTPUT"
 
       - name: Post budget comment on PR
+        if: github.event.pull_request.head.repo.full_name == github.repository
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: compute-budget
@@ -77,4 +123,4 @@ jobs:
           BUDGET_PCT=80
           WARN_THRESHOLD=$((LIMIT * BUDGET_PCT / 100))
           # Max estimated (release with 100 recipients): 100 * 500000 + 1000000 + 800000 = 51800000 < 100000000
-          echo "All estimated budgets are within the ${BUDGET_PCT}% warning threshold and hard limit."
+          echo "All estimated budgets are within the ${BUDGET_PCT}% warning threshold (${WARN_THRESHOLD}) and hard limit."

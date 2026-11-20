@@ -105,8 +105,9 @@ pub struct AdminTransferCancelledEvent {
 // Escrow release event
 // ──────────────────────────────────────────────────────────────────────
 
-/// Emitted after funds are successfully transferred to a recipient during
-/// a release call.
+/// Emitted after funds are transferred during automatic or explicit settlement.
+/// The legacy event precedes it with topics `(escrow, released, invoice_id)`
+/// and the released amount as its data.
 ///
 /// Event topics: `(escrow, released)`
 /// Event data: `EscrowReleased { invoice_id, recipient, amount }`
