@@ -180,3 +180,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 
 <!-- handsoff-issue-255 -->
 - #255: Match fee bracket coverage to the advertised payment domain
+
+<!-- handsoff-issue-256 -->
+- #256: Preserve solvable fee quotes at large amounts
