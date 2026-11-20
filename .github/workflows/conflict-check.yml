@@ -1,7 +1,8 @@
 name: Conflict Check
 
 on:
-  pull_request:
+  # Runs for conflicting fork PRs using the base workflow. Do not check out PR code.
+  pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened]
 
@@ -30,6 +31,11 @@ jobs:
               attempts++;
             }
 
+            if (mergeable === null) {
+              core.setFailed('Timed out waiting for GitHub to determine PR mergeability.');
+              return;
+            }
+
             if (mergeable === false) {
               // Avoid posting duplicate comments
               const { data: comments } = await github.rest.issues.listComments({
@@ -51,4 +57,5 @@ jobs:
                   body: `⚠️ **Merge Conflict Detected**\n\nThis PR has conflicts with \`main\` that must be resolved before it can be merged.\n\n**Steps to fix:**\n\`\`\`bash\ngit checkout main\ngit pull origin main\ngit checkout your-branch\ngit merge main\n# resolve conflicts in your editor\ngit add .\ngit commit\ngit push\n\`\`\`\n\nIf you need help resolving the conflict, leave a comment and the maintainer will assist.\n\n---\n*🤖 Automated conflict check*`
                 });
               }
+              core.setFailed('This pull request has merge conflicts with main.');
             }

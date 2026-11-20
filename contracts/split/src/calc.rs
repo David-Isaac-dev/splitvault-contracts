@@ -377,7 +377,8 @@ mod tests {
         assert_eq!(sum1, 10);
 
         // Case 2: 4 recipients with ratios [2, 3, 1, 4] and total=100
-        let r2 = distribute_with_remainder(&env, 100, &make_ratios(&env, &[2, 3, 1, 4]), 10).unwrap();
+        let r2 =
+            distribute_with_remainder(&env, 100, &make_ratios(&env, &[2, 3, 1, 4]), 10).unwrap();
         let sum2: i128 = r2.iter().sum();
         assert_eq!(sum2, 100);
 
@@ -401,7 +402,11 @@ mod tests {
             (1_000_000_000, &[1, 3, 5, 7], 16),
             (13, &[2, 3], 5),
             (10_000_007, &[1, 1, 1, 1, 1, 1, 1], 7),
-            (1_000_000_000_000i128, &[333_333, 333_333, 333_334], 1_000_000),
+            (
+                1_000_000_000_000i128,
+                &[333_333, 333_333, 333_334],
+                1_000_000,
+            ),
         ];
 
         for &(total, ratios, denom) in cases {

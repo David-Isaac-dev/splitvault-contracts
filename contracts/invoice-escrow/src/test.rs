@@ -13,7 +13,10 @@ use soroban_sdk::{symbol_short, token, Address, Env, IntoVal, Val};
 // Test helpers
 // ---------------------------------------------------------------------------
 
-fn xdr_event_topics(env: &Env, event: &soroban_sdk::xdr::ContractEvent) -> Option<soroban_sdk::Vec<Val>> {
+fn xdr_event_topics(
+    env: &Env,
+    event: &soroban_sdk::xdr::ContractEvent,
+) -> Option<soroban_sdk::Vec<Val>> {
     let soroban_sdk::xdr::ContractEventBody::V0(body) = &event.body;
     let mut topics = soroban_sdk::Vec::new(env);
     let topics_ref: &[soroban_sdk::xdr::ScVal] = body.topics.as_ref();
@@ -130,10 +133,7 @@ fn test_transfer_admin_emits_event() {
     // Find adm_prop event
     let found = events.events().iter().any(|event| {
         if let Some(topics) = xdr_event_topics(&env, event) {
-            topics == (
-                symbol_short!("escrow"),
-                symbol_short!("adm_prop"),
-            ).into_val(&env)
+            topics == (symbol_short!("escrow"), symbol_short!("adm_prop")).into_val(&env)
         } else {
             false
         }
@@ -185,10 +185,7 @@ fn test_accept_admin_emits_event() {
     let events = env.events().all();
     let found = events.events().iter().any(|event| {
         if let Some(topics) = xdr_event_topics(&env, event) {
-            topics == (
-                symbol_short!("escrow"),
-                symbol_short!("adm_acpt"),
-            ).into_val(&env)
+            topics == (symbol_short!("escrow"), symbol_short!("adm_acpt")).into_val(&env)
         } else {
             false
         }
@@ -241,10 +238,7 @@ fn test_cancel_transfer_emits_event() {
     let events = env.events().all();
     let found = events.events().iter().any(|event| {
         if let Some(topics) = xdr_event_topics(&env, event) {
-            topics == (
-                symbol_short!("escrow"),
-                symbol_short!("adm_cncl"),
-            ).into_val(&env)
+            topics == (symbol_short!("escrow"), symbol_short!("adm_cncl")).into_val(&env)
         } else {
             false
         }
@@ -288,7 +282,7 @@ fn test_full_admin_transfer_round_trip() {
 
     // Second transfer: propose → cancel → re-propose different address → accept
     client.transfer_admin(&admin); // propose old admin back
-    client.cancel_transfer();      // cancel it
+    client.cancel_transfer(); // cancel it
     assert_eq!(client.get_pending_admin(), None);
 
     client.transfer_admin(&third_admin);
@@ -373,6 +367,23 @@ fn test_create_invoice_invalid_amount() {
     let deadline = env.ledger().timestamp() + 10_000;
     let result = client.try_create_invoice(&creator, &token, &0, &deadline);
     assert_eq!(result, Err(Ok(Error::InvalidTotalAmount)));
+}
+
+#[test]
+fn test_create_invoice_deadline_boundary() {
+    let (env, contract_id) = setup();
+    let client = InvoiceEscrowContractClient::new(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let token = Address::generate(&env);
+    client.initialize(&Address::generate(&env));
+    env.ledger().with_mut(|ledger| ledger.timestamp = 100);
+
+    assert_eq!(
+        client.try_create_invoice(&creator, &token, &1, &99),
+        Err(Ok(Error::DeadlinePassed))
+    );
+    assert_eq!(client.create_invoice(&creator, &token, &1, &100), 0);
+    assert_eq!(client.create_invoice(&creator, &token, &1, &101), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -502,6 +513,37 @@ fn test_deposit_at_minimum_succeeds() {
     assert_eq!(invoice.funded_amount, 1_000_000);
 }
 
+#[test]
+fn test_deposit_below_minimum_can_close_remaining_balance() {
+    let (env, contract_id) = setup();
+    let client = InvoiceEscrowContractClient::new(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token(&env, &token_admin);
+    let deadline = env.ledger().timestamp() + 10;
+    mint(&env, &token, &token_admin, &payer, 1_000_020);
+    client.initialize(&Address::generate(&env));
+
+    for (total, first_deposit) in [(10, None), (1_000_010, Some(1_000_000))] {
+        let id = client.create_invoice(&creator, &token, &total, &deadline);
+        if let Some(amount) = first_deposit {
+            client.deposit(&payer, &id, &amount);
+        }
+        let before = client.get_invoice(&id);
+        assert_eq!(total - before.funded_amount, 10);
+        assert_eq!(
+            client.try_deposit(&payer, &id, &9),
+            Err(Ok(Error::DepositTooSmall))
+        );
+        assert_eq!(client.get_invoice(&id).funded_amount, before.funded_amount);
+        client.deposit(&payer, &id, &10);
+        assert_eq!(client.get_invoice(&id).status, EscrowStatus::Released);
+    }
+
+    assert_eq!(token::Client::new(&env, &token).balance(&creator), 1_000_020);
+}
+
 // ---------------------------------------------------------------------------
 // refund
 // ---------------------------------------------------------------------------
@@ -547,6 +589,60 @@ fn test_refund_after_deadline() {
     // Payer should get funds back
     let token_client = token::Client::new(&env, &token);
     assert_eq!(token_client.balance(&payer), 20_000_000);
+}
+
+#[test]
+fn test_refund_in_batches() {
+    assert_refund_batches(false);
+}
+
+#[test]
+fn test_refund_outstanding_deposit_on_legacy_refunded_invoice() {
+    assert_refund_batches(true);
+}
+
+fn assert_refund_batches(legacy_refunded: bool) {
+    let (env, contract_id) = setup();
+    let client = InvoiceEscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let payer1 = Address::generate(&env);
+    let payer2 = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    let deposit = 5_000_000;
+    mint(&env, &token, &admin, &payer1, deposit);
+    mint(&env, &token, &admin, &payer2, deposit);
+    client.initialize(&admin);
+    let id = client.create_invoice(&creator, &token, &(3 * deposit), &1);
+    client.deposit(&payer1, &id, &deposit);
+    client.deposit(&payer2, &id, &deposit);
+    env.ledger().set_timestamp(2);
+
+    let batch1 = soroban_sdk::vec![&env, payer1.clone()];
+    let batch2 = soroban_sdk::vec![&env, payer2.clone()];
+    let balances = token::Client::new(&env, &token);
+    client.refund(&id, &batch1);
+    assert_eq!(client.get_invoice(&id).status, EscrowStatus::Active);
+    assert_eq!(client.get_invoice(&id).funded_amount, deposit);
+    assert_eq!(client.get_deposit(&id, &payer1), 0);
+    assert_eq!(client.get_deposit(&id, &payer2), deposit);
+    assert_eq!(balances.balance(&payer1), deposit);
+
+    if legacy_refunded {
+        env.as_contract(&contract_id, || {
+            let mut invoice = super::get_invoice(&env, id).unwrap();
+            invoice.status = EscrowStatus::Refunded;
+            invoice.funded_amount = 2 * deposit;
+            super::save_invoice(&env, id, &invoice);
+        });
+    }
+
+    client.refund(&id, &batch2);
+    assert_eq!(client.get_invoice(&id).status, EscrowStatus::Refunded);
+    assert_eq!(client.get_deposit(&id, &payer2), 0);
+    assert_eq!(balances.balance(&payer2), deposit);
+    assert_eq!(balances.balance(&contract_id), 0);
+    assert_eq!(client.try_refund(&id, &batch2), Err(Ok(Error::InvalidStatus)));
 }
 
 #[test]
@@ -616,7 +712,9 @@ fn test_blacklist_payer_success() {
     let reason = bytesn32(&env, &[1u8; 32]);
     client.blacklist_payer(&admin, &payer, &reason);
 
-    let entry = client.get_blacklist_entry(&payer).expect("blacklist entry not found");
+    let entry = client
+        .get_blacklist_entry(&payer)
+        .expect("blacklist entry not found");
     assert!(!entry.finalised);
     assert!(entry.appeal_hash.is_none());
 }
@@ -691,7 +789,9 @@ fn test_appeal_then_reinstate_allows_deposit() {
     let appeal = bytesn32(&env, &[3u8; 32]);
     client.submit_appeal(&payer, &0u64, &appeal);
 
-    let entry = client.get_blacklist_entry(&payer).expect("entry must exist");
+    let entry = client
+        .get_blacklist_entry(&payer)
+        .expect("entry must exist");
     assert!(entry.appeal_hash.is_some());
 
     // Admin reinstates (uphold: false).
@@ -719,7 +819,9 @@ fn test_finalise_uphold_keeps_ban() {
     client.blacklist_payer(&admin, &payer, &reason);
     client.finalise_blacklist(&admin, &payer, &true);
 
-    let entry = client.get_blacklist_entry(&payer).expect("entry must exist");
+    let entry = client
+        .get_blacklist_entry(&payer)
+        .expect("entry must exist");
     assert!(entry.finalised);
     assert!(entry.upheld);
     assert!(client.is_payer_blacklisted(&payer));
@@ -759,10 +861,7 @@ fn test_blacklist_entry_emits_event() {
     let events = env.events().all();
     let found = events.events().iter().any(|event| {
         if let Some(topics) = xdr_event_topics(&env, event) {
-            topics == (
-                symbol_short!("blacklist"),
-                symbol_short!("bl_add"),
-            ).into_val(&env)
+            topics == (symbol_short!("blacklist"), symbol_short!("bl_add")).into_val(&env)
         } else {
             false
         }
@@ -786,10 +885,7 @@ fn test_finalise_blacklist_emits_event() {
     let events = env.events().all();
     let found = events.events().iter().any(|event| {
         if let Some(topics) = xdr_event_topics(&env, event) {
-            topics == (
-                symbol_short!("blacklist"),
-                symbol_short!("bl_fin"),
-            ).into_val(&env)
+            topics == (symbol_short!("blacklist"), symbol_short!("bl_fin")).into_val(&env)
         } else {
             false
         }
@@ -848,12 +944,7 @@ fn test_get_escrow_balance_existing_invoice_returns_funded_amount() {
     // Mint enough tokens to the payer.
     mint(&env, &token, &token_admin, &payer, total);
 
-    let invoice_id = client.create_invoice(
-        &Address::generate(&env),
-        &token,
-        &total,
-        &deadline,
-    );
+    let invoice_id = client.create_invoice(&Address::generate(&env), &token, &total, &deadline);
 
     // Before any deposit, balance should equal 0.
     assert_eq!(client.get_escrow_balance(&invoice_id), 0);
@@ -911,13 +1002,16 @@ fn test_release_emits_escrow_released_event() {
         // Topics for the structured release event are (escrow, released).
         if let Some(topics) = xdr_event_topics(&env, event) {
             if topics.len() >= 2 {
-                if let Ok(t0) = <soroban_sdk::Symbol as soroban_sdk::TryFromVal<Env, soroban_sdk::Val>>::try_from_val(
-                    &env,
-                    &topics.get_unchecked(0),
-                ) {
-                    if let Ok(t1) = <soroban_sdk::Symbol as soroban_sdk::TryFromVal<Env, soroban_sdk::Val>>::try_from_val(
-                        &env,
-                        &topics.get_unchecked(1),
+                if let Ok(t0) = <soroban_sdk::Symbol as soroban_sdk::TryFromVal<
+                    Env,
+                    soroban_sdk::Val,
+                >>::try_from_val(&env, &topics.get_unchecked(0))
+                {
+                    if let Ok(t1) = <soroban_sdk::Symbol as soroban_sdk::TryFromVal<
+                        Env,
+                        soroban_sdk::Val,
+                    >>::try_from_val(
+                        &env, &topics.get_unchecked(1)
                     ) {
                         if t0 == symbol_short!("escrow") && t1 == symbol_short!("released") {
                             found = true;
@@ -927,8 +1021,31 @@ fn test_release_emits_escrow_released_event() {
                 }
             }
         }
+
+        let events = env.events().all().filter_by_contract(&contract_id);
+        let legacy_topics: soroban_sdk::Vec<Val> =
+            (symbol_short!("escrow"), symbol_short!("released"), invoice_id).into_val(&env);
+        let structured_topics: soroban_sdk::Vec<Val> =
+            (symbol_short!("escrow"), symbol_short!("released")).into_val(&env);
+        let mut releases = events.events().iter().filter_map(|event| {
+            let topics = xdr_event_topics(&env, event)?;
+            let soroban_sdk::xdr::ContractEventBody::V0(body) = &event.body;
+            let data = Val::try_from_val(&env, &body.data).ok()?;
+            (topics == legacy_topics || topics == structured_topics).then_some((topics, data))
+        });
+
+        let (topics, data) = releases.next().expect("legacy release event");
+        assert_eq!(topics, legacy_topics);
+        assert_eq!(i128::try_from_val(&env, &data).unwrap(), total);
+
+        let (topics, data) = releases.next().expect("structured release event");
+        assert_eq!(topics, structured_topics);
+        let event = EscrowReleased::try_from_val(&env, &data).unwrap();
+        assert_eq!(event.invoice_id, invoice_id);
+        assert_eq!(event.recipient, creator);
+        assert_eq!(event.amount, total);
+        assert!(releases.next().is_none());
     }
-    assert!(found, "EscrowReleased event was not emitted during release");
 }
 
 // ---------------------------------------------------------------------------
@@ -956,9 +1073,7 @@ fn test_deposit_reentrancy_guard_blocks_when_locked() {
     // Manually set the reentrancy lock in instance storage to simulate a
     // mid-execution lock that was not released (simulates reentrancy).
     env.as_contract(&contract_id, || {
-        env.storage()
-            .instance()
-            .set(&symbol_short!("lock"), &true);
+        env.storage().instance().set(&symbol_short!("lock"), &true);
     });
 
     let result = client.try_deposit(&payer, &_id, &5_000_000);
@@ -1008,7 +1123,9 @@ fn test_appeal_within_ledger_window_succeeds() {
     client.blacklist_payer(&admin, &payer, &reason);
 
     // Verify ban_ledger is stored correctly.
-    let entry = client.get_blacklist_entry(&payer).expect("entry must exist");
+    let entry = client
+        .get_blacklist_entry(&payer)
+        .expect("entry must exist");
     assert_eq!(entry.ban_ledger, env.ledger().sequence());
 
     // Advance ledger by less than APPEAL_WINDOW_LEDGERS (360).
@@ -1028,7 +1145,9 @@ fn test_appeal_within_ledger_window_succeeds() {
     let appeal = bytesn32(&env, &[11u8; 32]);
     client.submit_appeal(&payer, &0u64, &appeal);
 
-    let entry = client.get_blacklist_entry(&payer).expect("entry must exist");
+    let entry = client
+        .get_blacklist_entry(&payer)
+        .expect("entry must exist");
     assert!(entry.appeal_hash.is_some());
 }
 
@@ -1061,4 +1180,32 @@ fn test_appeal_after_ledger_window_fails() {
     let appeal = bytesn32(&env, &[13u8; 32]);
     let result = client.try_submit_appeal(&payer, &0u64, &appeal);
     assert_eq!(result, Err(Ok(Error::AppealWindowExpired)));
+}
+
+#[test]
+fn test_deposit_overflow_returns_overfunded_without_mutation() {
+    let (env, contract_id) = setup();
+    let client = InvoiceEscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let creator = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token = create_token(&env, &admin);
+    mint(&env, &token, &admin, &payer, 5_000_000);
+
+    client.initialize(&admin);
+    let id = client.create_invoice(&creator, &token, &10_000_000, &10_000);
+    client.deposit(&payer, &id, &1_000_000);
+
+    assert_eq!(
+        client.try_deposit(&payer, &id, &i128::MAX),
+        Err(Ok(Error::OverFunded))
+    );
+    let invoice = client.get_invoice(&id);
+    assert_eq!(invoice.funded_amount, 1_000_000);
+    assert_eq!(invoice.status, EscrowStatus::Active);
+    assert_eq!(client.get_deposit(&id, &payer), 1_000_000);
+    let balances = token::Client::new(&env, &token);
+    assert_eq!(balances.balance(&payer), 4_000_000);
+    assert_eq!(balances.balance(&contract_id), 1_000_000);
+    assert_eq!(balances.balance(&creator), 0);
 }

@@ -2,6 +2,15 @@
 
 This document describes the design, methodology, measurement process, and resource ranges for the read-only simulation-only compute budget estimation API (`estimate_compute`).
 
+## CI measurements
+
+The Compute Budget Check builds the release WASM and meters its invocations in the
+Soroban test host. The report covers invoice creation, regular and delegated
+payments, release, invoice reads, and stats reads for 1, 5, and 20 recipients.
+The job fails if it receives zero measurements or any measurement exceeds
+100,000,000 CPU instructions. Values above 80,000,000 are flagged in the report.
+The workflow job summary shows the measurements for every PR.
+
 ---
 
 ## 1. Estimation API Overview

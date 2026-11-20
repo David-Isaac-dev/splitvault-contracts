@@ -7,7 +7,7 @@ This document enumerates every storage key used by the SplitVault contract, orga
 | Tier | Lifecycle | Keys | Typical TTL |
 |------|-----------|------|------------|
 | **instance** | Live during contract execution; wiped on upgrade unless explicitly preserved. | Singletons (config, counters, addresses) | Contract lifetime |
-| **persistent** | Survives contract upgrades; archived after `ARCHIVE_AFTER_LEDGERS` (~100k ledgers) | Per-entity state | 100k ledgers or longer |
+| **persistent** | Survives contract upgrades; eligible settled invoices are marked archived after `ARCHIVE_AFTER_LEDGERS` | Per-entity state | 100k ledgers or longer |
 | **temporary** | Short-lived ephemeral state (not yet used) | None | – |
 
 ## Instance Storage: `StorageKey` enum
@@ -94,7 +94,7 @@ Keys keyed by invoice ID or sharded. All carry a u64 invoice ID unless noted.
 | `AmountsList(id)` | `(Symbol, u64)` | #332 | Vec<i128> | Parallel amounts for each recipient |
 | `PaidFlags(id)` | `(Symbol, u64)` | #332 | u32 | Bit-vector of paid flags (up to 32 recipients per word) |
 | `MilestoneFlags(id)` | `(Symbol, u64)` | #333 | u8 | Milestone emission bitmask (Bit0=25%, Bit1=50%, etc.) |
-| `ArchiveMarker(id)` | `(Symbol, u64)` | v1 | bool | Set when invoice is moved to instance storage |
+| `ArchiveMarker(id)` | `(Symbol, u64)` | v1 | bool | Set when a settled invoice is archived in persistent storage |
 | `CreatedLedger(id)` | `(Symbol, u64)` | v1 | u32 | Ledger sequence at invoice creation |
 | `SubscriptionParams(id)` | `(Symbol, u64)` | v1 | SubscriptionParams | Subscription parameters |
 | `SubscriptionSubscribers(id)` | `(Symbol, u64)` | v1 | Vec<Address> | Subscription subscriber list |

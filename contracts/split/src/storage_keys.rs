@@ -31,7 +31,9 @@
 //! Use [`migrate_persistent`] / [`migrate_instance`] when renaming a key
 //! between contract versions.
 
-use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, IntoVal, Symbol, TryFromVal, Val};
+use soroban_sdk::{
+    contracttype, symbol_short, Address, BytesN, Env, IntoVal, Symbol, TryFromVal, Val,
+};
 
 // ---------------------------------------------------------------------------
 // Enum 1 — Instance-tier singletons
@@ -350,27 +352,51 @@ mod tests {
     fn instance_keys_are_unique() {
         let env = Env::default();
         let keys: &[StorageKey] = &[
-            StorageKey::Admin, StorageKey::Admins, StorageKey::Paused,
-            StorageKey::PausedFns, StorageKey::Treasury, StorageKey::UsdcToken,
-            StorageKey::CreationFee, StorageKey::PlatformFeeBps,
-            StorageKey::PlatformFeeWaiverList, StorageKey::CreatorFeeWaiver,
-            StorageKey::Counter, StorageKey::GlobalPayerLimit,
-            StorageKey::GlobalPayerWindow, StorageKey::StreamContract,
-            StorageKey::CreatorWhitelist, StorageKey::Compliance,
-            StorageKey::KycContract, StorageKey::RateLimit, StorageKey::RateWindow,
-            StorageKey::MaxCancelBps, StorageKey::ReceiptFactory,
-            StorageKey::DashboardContract, StorageKey::NftGate,
-            StorageKey::TimelockSecs, StorageKey::TimelockActionCounter,
-            StorageKey::FeeTiers, StorageKey::PendingAdmin,
-            StorageKey::GovernanceContract, StorageKey::Factories,
-            StorageKey::DexContract, StorageKey::TotalInvoices,
-            StorageKey::TotalVolume, StorageKey::TotalReleased,
-            StorageKey::TotalRefunded, StorageKey::TreasuryGroupCounter,
-            StorageKey::ContractVersion, StorageKey::ArchiveAfterLedgers,
-            StorageKey::CircuitBreaker, StorageKey::CircuitBreakerReason,
-            StorageKey::PlatformVolThresh, StorageKey::PlatformVolMile,
-            StorageKey::CreatorVolThresh, StorageKey::UpgradeProposal,
-            StorageKey::ProtocolFee, StorageKey::ReentrancyGuard,
+            StorageKey::Admin,
+            StorageKey::Admins,
+            StorageKey::Paused,
+            StorageKey::PausedFns,
+            StorageKey::Treasury,
+            StorageKey::UsdcToken,
+            StorageKey::CreationFee,
+            StorageKey::PlatformFeeBps,
+            StorageKey::PlatformFeeWaiverList,
+            StorageKey::CreatorFeeWaiver,
+            StorageKey::Counter,
+            StorageKey::GlobalPayerLimit,
+            StorageKey::GlobalPayerWindow,
+            StorageKey::StreamContract,
+            StorageKey::CreatorWhitelist,
+            StorageKey::Compliance,
+            StorageKey::KycContract,
+            StorageKey::RateLimit,
+            StorageKey::RateWindow,
+            StorageKey::MaxCancelBps,
+            StorageKey::ReceiptFactory,
+            StorageKey::DashboardContract,
+            StorageKey::NftGate,
+            StorageKey::TimelockSecs,
+            StorageKey::TimelockActionCounter,
+            StorageKey::FeeTiers,
+            StorageKey::PendingAdmin,
+            StorageKey::GovernanceContract,
+            StorageKey::Factories,
+            StorageKey::DexContract,
+            StorageKey::TotalInvoices,
+            StorageKey::TotalVolume,
+            StorageKey::TotalReleased,
+            StorageKey::TotalRefunded,
+            StorageKey::TreasuryGroupCounter,
+            StorageKey::ContractVersion,
+            StorageKey::ArchiveAfterLedgers,
+            StorageKey::CircuitBreaker,
+            StorageKey::CircuitBreakerReason,
+            StorageKey::PlatformVolThresh,
+            StorageKey::PlatformVolMile,
+            StorageKey::CreatorVolThresh,
+            StorageKey::UpgradeProposal,
+            StorageKey::ProtocolFee,
+            StorageKey::ReentrancyGuard,
             StorageKey::MinRecipients,
         ];
         for i in 0..keys.len() {
@@ -389,13 +415,20 @@ mod tests {
         let env = Env::default();
         let id = 42u64;
         let keys: &[InvoiceKey] = &[
-            InvoiceKey::Invoice(id), InvoiceKey::InvoiceExt(id),
-            InvoiceKey::InvoiceExt2(id), InvoiceKey::InvoiceCompact(id),
-            InvoiceKey::InvoiceHot(id), InvoiceKey::AuditLog(id),
-            InvoiceKey::ReleaseDelay(id), InvoiceKey::CompactStatus(id),
-            InvoiceKey::RecipientsList(id), InvoiceKey::AmountsList(id),
-            InvoiceKey::PaidFlags(id), InvoiceKey::MilestoneFlags(id),
-            InvoiceKey::ArchiveMarker(id), InvoiceKey::CreatedLedger(id),
+            InvoiceKey::Invoice(id),
+            InvoiceKey::InvoiceExt(id),
+            InvoiceKey::InvoiceExt2(id),
+            InvoiceKey::InvoiceCompact(id),
+            InvoiceKey::InvoiceHot(id),
+            InvoiceKey::AuditLog(id),
+            InvoiceKey::ReleaseDelay(id),
+            InvoiceKey::CompactStatus(id),
+            InvoiceKey::RecipientsList(id),
+            InvoiceKey::AmountsList(id),
+            InvoiceKey::PaidFlags(id),
+            InvoiceKey::MilestoneFlags(id),
+            InvoiceKey::ArchiveMarker(id),
+            InvoiceKey::CreatedLedger(id),
             InvoiceKey::EvSeq(id),
         ];
         for i in 0..keys.len() {
@@ -535,4 +568,3 @@ pub fn tombstone_key(invoice_id: u64) -> (Symbol, u64) {
 pub fn ev_seq_key(invoice_id: u64) -> InvoiceKey {
     InvoiceKey::EvSeq(invoice_id)
 }
-
