@@ -7469,6 +7469,14 @@ impl SplitContract {
         events::payment_committed(&env, invoice_id, &payer, commitment.commit_ledger);
     }
 
+    /// Issue #237: expose the configured payment commitment expiry (in ledgers).
+    ///
+    /// Uses the same fallback as `reveal_payment`: when no expiry has been
+    /// configured via `set_commitment_expiry`, the default window applies.
+    pub fn get_commitment_expiry(env: Env) -> u32 {
+        current_commitment_expiry(&env)
+    }
+
     pub fn reveal_payment(
         env: Env,
         payer: Address,
