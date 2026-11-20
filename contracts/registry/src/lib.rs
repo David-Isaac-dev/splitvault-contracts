@@ -106,6 +106,54 @@ pub fn pause_changed(env: &Env, paused: bool) {
 }
 
 // ---------------------------------------------------------------------------
+// Shared removal bookkeeping
+// ---------------------------------------------------------------------------
+
+/// Perform the successful-removal mutation shared by both deregister entry
+/// points: scan the creator's list, rewrite (or drop) it, clear the
+/// duplicate-registration flag, and emit the discovery event.
+///
+/// Callers are responsible for auth and for their own missing-entry semantics
+/// before invoking this helper.
+fn remove_registration(env: &Env, creator: &Address, contract: &Address) {
+    let contracts_key = creator_contracts_key(creator);
+    let registration_check_key = registration_key(creator, contract);
+
+    let contracts: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&contracts_key)
+        .unwrap_or_else(|| Vec::new(env));
+
+    let mut remaining: Vec<Address> = Vec::new(env);
+    let mut i = 0;
+    while i < contracts.len() {
+        let entry = contracts.get_unchecked(i);
+        if entry != *contract {
+            remaining.push_back(entry);
+        }
+        i += 1;
+    }
+
+    if remaining.is_empty() {
+        // Final removal: drop the list entirely so no rent-bearing empty
+        // entry lingers. A later registration reconstructs it fresh.
+        env.storage().persistent().remove(&contracts_key);
+    } else {
+        env.storage().persistent().set(&contracts_key, &remaining);
+        env.storage()
+            .persistent()
+            .extend_ttl(&contracts_key, REGISTRY_MIN_TTL, REGISTRY_MAX_TTL);
+    }
+
+    env.storage()
+        .persistent()
+        .remove(&registration_check_key);
+
+    contract_deregistered(env, creator, contract);
+}
+
+// ---------------------------------------------------------------------------
 // Contract
 // ---------------------------------------------------------------------------
 
@@ -182,9 +230,7 @@ impl Registry {
             .expect("not initialized");
         admin.require_auth();
 
-        let contracts_key = creator_contracts_key(&creator);
         let registration_check_key = registration_key(&creator, &contract);
-
         if !env.storage().persistent().has(&registration_check_key) {
             return;
         }
@@ -239,9 +285,7 @@ impl Registry {
     pub fn deregister(env: Env, creator: Address, contract: Address) {
         creator.require_auth();
 
-        let contracts_key = creator_contracts_key(&creator);
         let registration_check_key = registration_key(&creator, &contract);
-
         assert!(
             env.storage().persistent().has(&registration_check_key),
             "not registered"
