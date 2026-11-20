@@ -16,3 +16,5 @@ dashboard = { path = "../dashboard", features = ["testutils"] }
 
 [features]
 testutils = ["soroban-sdk/testutils"]
+# The direct testnet deploy uses an atomic constructor. Factory builds keep their existing ABI.
+testnet-constructor = []

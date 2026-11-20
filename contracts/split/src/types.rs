@@ -1908,7 +1908,6 @@ pub struct PaymentRecord {
     pub ledger: u32,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::InvoiceStatus;

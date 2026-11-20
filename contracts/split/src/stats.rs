@@ -43,9 +43,7 @@ pub fn get_stats(env: &Env) -> Stats {
     ProtocolStats {
         total_invoices: storage.get(&total_invoices_key(env)).unwrap_or(0u64),
         total_volume: storage.get(&total_volume_key(env)).unwrap_or(0i128),
-        total_recipients_paid: storage
-            .get(&total_recipients_paid_key(env))
-            .unwrap_or(0u64),
+        total_recipients_paid: storage.get(&total_recipients_paid_key(env)).unwrap_or(0u64),
     }
 }
 
@@ -72,13 +70,16 @@ pub fn increment(
 ) -> Result<ProtocolStats, ContractError> {
     let current = get_stats(env);
 
-    let next_invoices = current.total_invoices
+    let next_invoices = current
+        .total_invoices
         .checked_add(invoices)
         .ok_or(ContractError::StatsOverflow)?;
-    let next_volume = current.total_volume
+    let next_volume = current
+        .total_volume
         .checked_add(volume)
         .ok_or(ContractError::StatsOverflow)?;
-    let next_recipients_paid = current.total_recipients_paid
+    let next_recipients_paid = current
+        .total_recipients_paid
         .checked_add(recipients_paid)
         .ok_or(ContractError::StatsOverflow)?;
 
