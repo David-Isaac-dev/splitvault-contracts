@@ -211,49 +211,19 @@ pub fn run_pending_migrations(env: &Env, batch_size: u32) -> u32 {
         batch_size
     };
     let mut version = schema_version(env);
-    if version < 2 {
-        if migration_v2(env, batch_size) {
-            version = 2;
-            set_schema_version(env, version);
-        } else {
-            return version;
+    while version < CURRENT_SCHEMA_VERSION {
+        let complete = match version {
+            1 => migration_v2(env, batch_size),
+            2 => migration_v3(env, batch_size),
+            _ => true,
+        };
+        if !complete {
+            // Chunk budget exhausted for this version; stop and let the next
+            // `migrate` call resume from the persisted cursor.
+            break;
         }
+        version += 1;
+        set_schema_version(env, version);
     }
-    if version < 3 {
-        if migration_v3(env, batch_size) {
-            version = 3;
-            set_schema_version(env, version);
-        } else {
-            return version;
-        }
-    }
-    // Issue #36: Pedersen generators are pinned in instance storage during
-    // `initialize()`, but contracts that are upgraded via Soroban WASM upgrade
-    // never re-execute `initialize()`.  Lazily backfill the generators here so
-    // that confidential payment features work correctly on upgraded contracts.
-    ensure_pedersen_generators(env);
     version
-}
-
-/// Backfill Pedersen commitment generators if they are absent from instance
-/// storage.  Safe to call on freshly-initialized contracts because the
-/// early-return means we never overwrite an already-established basis.
-pub fn ensure_pedersen_generators(env: &Env) {
-    if env.storage().instance().has(&pedersen_g_key())
-        && env.storage().instance().has(&pedersen_h_key())
-    {
-        return;
-    }
-    let dst = soroban_sdk::Bytes::from_slice(env, b"SplitVault-Pedersen-BLS12381G1-v1");
-    let bls = env.crypto().bls12_381();
-    let g = bls.hash_to_g1(
-        &soroban_sdk::Bytes::from_slice(env, b"pedersen-generator-G"),
-        &dst,
-    );
-    let h = bls.hash_to_g1(
-        &soroban_sdk::Bytes::from_slice(env, b"pedersen-generator-H"),
-        &dst,
-    );
-    env.storage().instance().set(&pedersen_g_key(), &g);
-    env.storage().instance().set(&pedersen_h_key(), &h);
 }
