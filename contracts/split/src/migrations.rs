@@ -34,6 +34,14 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 /// caller does not supply an explicit `batch_size`.
 pub const DEFAULT_MIGRATION_BATCH_SIZE: u32 = 50;
 
+/// Minimum lease (in ledgers) applied to invoice note metadata written by the
+/// v2 -> v3 key rename. Soroban persistent entries expire unless their TTL is
+/// extended; a migrated note must remain readable for at least this many
+/// ledgers after the migration runs. At ~5s per ledger this is roughly 30
+/// days, comfortably above the documented minimum lease for migrated
+/// metadata.
+pub const MIGRATED_META_MIN_TTL_LEDGERS: u32 = 518_400;
+
 /// Instance storage: current on-chain schema version.
 pub(crate) fn schema_version_key() -> Symbol {
     symbol_short!("schm_ver")
@@ -192,7 +200,10 @@ fn migration_v2(env: &Env, batch_size: u32) -> bool {
 // ---------------------------------------------------------------------------
 // The `inv_meta` key introduced at v2 is renamed to `inv_note` to match the
 // public `get_invoice_note` entry point. This demonstrates a pure key rename:
-// read under the old key, write under the new one, drop the old entry.
+// read under the old key, write under the new one, drop the old entry. The
+// replacement entry's TTL is explicitly extended to
+// [`MIGRATED_META_MIN_TTL_LEDGERS`] so the migrated note survives the
+// documented minimum lease relative to migration.
 
 pub(crate) fn invoice_meta_key_v3(id: u64) -> (Symbol, u64) {
     (symbol_short!("inv_note"), id)
@@ -211,10 +222,13 @@ fn migration_v3(env: &Env, batch_size: u32) -> bool {
     let mut id = cursor + 1;
     while id <= end {
         let old_key = invoice_meta_key_v2(id);
-        if let Some(meta) = env.storage().persistent().get::<_, InvoiceMeta>(&old_key) {
+        if env.storage().persistent().has(&old_key) {
+            let meta: InvoiceMeta = env.storage().persistent().get(&old_key).unwrap();
+            let new_key = invoice_meta_key_v3(id);
+            env.storage().persistent().set(&new_key, &meta);
             env.storage()
                 .persistent()
-                .set(&invoice_meta_key_v3(id), &meta);
+                .extend_ttl(&new_key, MIGRATED_META_MIN_TTL_LEDGERS, MIGRATED_META_MIN_TTL_LEDGERS);
             env.storage().persistent().remove(&old_key);
         }
         id += 1;
@@ -227,28 +241,4 @@ fn migration_v3(env: &Env, batch_size: u32) -> bool {
         set_migration_cursor(env, 3, cursor);
         false
     }
-}
-
-/// Look up an invoice's note under its current (post-v3) storage key.
-pub fn get_invoice_meta(env: &Env, id: u64) -> Option<InvoiceMeta> {
-    env.storage().persistent().get(&invoice_meta_key_v3(id))
-}
-
-/// Run pending migrations in bounded chunks of `batch_size` invoice ids per
-/// call. Each step advances the stored schema version only once its chunked
-/// loop has fully completed, and persists a per-target-version cursor so a
-/// subsequent `migrate` call resumes where the previous transaction left off.
-/// Returns the resulting schema version (which may still be below
-/// [`CURRENT_SCHEMA_VERSION`] when more chunks remain).
-pub fn run_pending_migrations(env: &Env, batch_size: u32) -> u32 {
-    let mut version = schema_version(env);
-    if version < 2 && migration_v2(env, batch_size) {
-        version = 2;
-        set_schema_version(env, version);
-    }
-    if version < 3 && migration_v3(env, batch_size) {
-        version = 3;
-        set_schema_version(env, version);
-    }
-    version
 }
