@@ -178,14 +178,14 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 <!-- handsoff-issue-64 -->
 - #64: Silent Payout Loss in `reveal_confidential_payment` Due to Omission of Shard Storage
 
-<!-- handsoff-issue-255 -->
-- #255: Match fee bracket coverage to the advertised payment domain
+<!-- handsoff-issue-129 -->
+- #129: `auto_resolve` Refund Action Iterates Over Unpopulated Payments Vector Stranding Tokens
 
-<!-- handsoff-issue-256 -->
-- #256: Preserve solvable fee quotes at large amounts
+<!-- handsoff-issue-130 -->
+- #130: Anonymous Invoice Mode Storage Key Is Never Set Making Anonymity Queries Always False
 
-<!-- handsoff-issue-257 -->
-- #257: Specify the recipient of rounding residue in fee splits
+<!-- handsoff-issue-131 -->
+- #131: Referral Reward Distribution Unimplemented in Release Workflow Leaving Fees Stranded
 
-<!-- handsoff-issue-258 -->
-- #258: Document and test canonical recipient sorting across address kinds
+<!-- handsoff-issue-132 -->
+- #132: `set_admin_set` Allows Duplicate Signer Addresses Undermining Multisig Quorum Security

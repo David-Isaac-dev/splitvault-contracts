@@ -14,6 +14,7 @@ Full reference for all public entry points in the SplitVault Soroban contract (`
 - [Groups & Treasury](#groups--treasury)
 - [Channels](#channels)
 - [Disputes](#disputes)
+- [Auctions](#auctions)
 - [Templates & Cloning](#templates--cloning)
 - [Subscriptions](#subscriptions)
 - [Confidential Payments](#confidential-payments)
@@ -483,6 +484,13 @@ pub fn refund(env: Env, invoice_id: u64)
 
 Refunds all payers proportionally. Can be called by anyone after `deadline` passes if the invoice is not fully funded (and `refund_grace_secs` has elapsed if set). Emits `invoice_refunded` and per-payer `payer_refunded`.
 
+The payer vector processed per call is bounded by `MAX_REFUND_BATCH` (see
+`contracts/invoice-escrow/src/lib.rs`). A batch at or below the cap succeeds; a
+larger batch is rejected before any transfer or storage work is performed.
+Consecutive capped batches are supported, so a refund with more payers than the
+cap is completed by calling `refund` repeatedly until all payers are settled.
+=======
+
 ### `simulate_release`
 
 ```rust
@@ -589,13 +597,21 @@ pub fn set_reminder(env: Env, who: Address, invoice_id: u64, remind_at: u64)
 
 Schedules a reminder event for `who` at `remind_at` timestamp.
 
+### `cancel_reminder`
+
+```rust
+pub fn cancel_reminder(env: Env, who: Address, invoice_id: u64)
+```
+
+Cancels a reminder previously scheduled by `who` for `invoice_id`. Requires `who` auth. Cancellation is scoped to the caller: only the owner's own reminder is removed, so other accounts' reminders for the same invoice remain scheduled and can still fire. A cancelled reminder cannot be triggered — `trigger_reminder` is a no-op (no event) for a cancelled reminder. Emits `reminder_cancelled`.
+
 ### `trigger_reminder`
 
 ```rust
 pub fn trigger_reminder(env: Env, invoice_id: u64, who: Address)
 ```
 
-Fires the reminder event if `remind_at` has passed. Emits `payment_reminder`.
+Fires the reminder event if `remind_at` has passed. Emits `payment_reminder`. Does nothing if the reminder was cancelled via `cancel_reminder`.
 
 ---
 
@@ -758,6 +774,25 @@ pub fn cancel_action(env: Env, admin: Address, action_id: u64)
 ```
 
 Cancels a pending timelocked action. Emits `action_cancelled`.
+
+### `get_queued_action`
+
+```rust
+pub fn get_queued_action(env: Env, action_id: u64) -> Option<QueuedAction>
+```
+
+Returns the stored record for `action_id`, allowing clients to reconcile state
+without replaying events. Results:
+
+| Result | Meaning |
+|--------|---------|
+| `Some(action)` with `executed == false` | Pending — queued and not yet executed or cancelled |
+| `Some(action)` with `executed == true` | Executed — the action has already run |
+| `None` | Absent — the ID was never queued, or it was cancelled |
+
+Cancelled IDs are removed from storage, so a cancelled action is indistinguishable
+from an ID that was never queued: both return `None`. Clients that need to
+distinguish cancellation from absence should track `action_cancelled` events.
 
 ---
 
@@ -947,6 +982,28 @@ pub fn get_invoice_ext3(env: Env, invoice_id: u64) -> InvoiceExt3
 
 Returns Wave 6 extended fields including `release_delay_ledgers`, `metadata_hash`, `payment_token`, and `target_usd_cents`.
 
+## Auctions
+
+### `place_bid`
+
+```rust
+pub fn place_bid(env: Env, bidder: Address, invoice_id: u64, amount: i128)
+```
+
+Places a bid on an invoice auction. Accepted bids are appended to the invoice's bid list, bounded by the documented auction capacity (`MAX_AUCTION_BIDS`); bids beyond capacity are rejected. Each accepted bid emits exactly one structured bid event identifying the invoice and the bid amount. Rejected bids emit no event.
+
+### `settle_auction`
+
+```rust
+pub fn settle_auction(env: Env, invoice_id: u64)
+```
+
+Settles a completed auction. Settlement iterates the accepted bids once, so its work is bounded by the auction capacity: an auction at `MAX_AUCTION_BIDS` settles within the supported resource budget and accounts for every accepted bid.
+
+---
+
+## Read Functions
+
 ### `get_audit_log`
 
 ```rust
@@ -954,6 +1011,26 @@ pub fn get_audit_log(env: Env, id: u64) -> Vec<AuditEntry>
 ```
 
 Returns the ordered list of `{ action, actor, timestamp }` entries for an invoice.
+
+### `get_deposit`
+
+```rust
+pub fn get_deposit(env: Env, invoice_id: u64, payer: Address) -> i128
+```
+
+Returns the recorded deposit for `payer` on `invoice_id`. The value is a
+**historical contribution record**, not an outstanding balance, and its meaning
+depends on the invoice lifecycle state:
+
+| Invoice state | `get_deposit` result | Interpretation |
+|---------------|----------------------|----------------|
+| Active (unfunded / partially funded) | Amount contributed so far | Outstanding contribution; also the amount that would be refunded |
+| Released | Amount contributed at release | Historical contribution only — funds have already been paid out to recipients |
+| Refunded | `0` | The payer key is removed during `refund`, so no record remains |
+
+Clients displaying history should treat a non-zero result on a released invoice
+as a past contribution, not as a claimable balance. On refunded invoices the
+absence of a record (zero) is expected and does not mean the payer never paid.
 
 ### `get_receipt_token`
 
