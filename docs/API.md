@@ -14,6 +14,7 @@ Full reference for all public entry points in the SplitVault Soroban contract (`
 - [Groups & Treasury](#groups--treasury)
 - [Channels](#channels)
 - [Disputes](#disputes)
+- [Auctions](#auctions)
 - [Templates & Cloning](#templates--cloning)
 - [Subscriptions](#subscriptions)
 - [Confidential Payments](#confidential-payments)
@@ -596,13 +597,21 @@ pub fn set_reminder(env: Env, who: Address, invoice_id: u64, remind_at: u64)
 
 Schedules a reminder event for `who` at `remind_at` timestamp.
 
+### `cancel_reminder`
+
+```rust
+pub fn cancel_reminder(env: Env, who: Address, invoice_id: u64)
+```
+
+Cancels a reminder previously scheduled by `who` for `invoice_id`. Requires `who` auth. Cancellation is scoped to the caller: only the owner's own reminder is removed, so other accounts' reminders for the same invoice remain scheduled and can still fire. A cancelled reminder cannot be triggered — `trigger_reminder` is a no-op (no event) for a cancelled reminder. Emits `reminder_cancelled`.
+
 ### `trigger_reminder`
 
 ```rust
 pub fn trigger_reminder(env: Env, invoice_id: u64, who: Address)
 ```
 
-Fires the reminder event if `remind_at` has passed. Emits `payment_reminder`.
+Fires the reminder event if `remind_at` has passed. Emits `payment_reminder`. Does nothing if the reminder was cancelled via `cancel_reminder`.
 
 ---
 
@@ -972,6 +981,28 @@ pub fn get_invoice_ext3(env: Env, invoice_id: u64) -> InvoiceExt3
 ```
 
 Returns Wave 6 extended fields including `release_delay_ledgers`, `metadata_hash`, `payment_token`, and `target_usd_cents`.
+
+## Auctions
+
+### `place_bid`
+
+```rust
+pub fn place_bid(env: Env, bidder: Address, invoice_id: u64, amount: i128)
+```
+
+Places a bid on an invoice auction. Accepted bids are appended to the invoice's bid list, bounded by the documented auction capacity (`MAX_AUCTION_BIDS`); bids beyond capacity are rejected. Each accepted bid emits exactly one structured bid event identifying the invoice and the bid amount. Rejected bids emit no event.
+
+### `settle_auction`
+
+```rust
+pub fn settle_auction(env: Env, invoice_id: u64)
+```
+
+Settles a completed auction. Settlement iterates the accepted bids once, so its work is bounded by the auction capacity: an auction at `MAX_AUCTION_BIDS` settles within the supported resource budget and accounts for every accepted bid.
+
+---
+
+## Read Functions
 
 ### `get_audit_log`
 

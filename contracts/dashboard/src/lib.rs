@@ -278,7 +278,7 @@ impl DashboardContract {
             .expect("refunded_count overflow");
         dashboard.refunded_volume = dashboard
             .refunded_volume
-            .checked_add(total)
+            .checked_add(amount)
             .expect("refunded_volume overflow");
         env.storage().persistent().set(&key, &dashboard);
         refresh_aggregate_ttl(&env, &key);
@@ -293,6 +293,21 @@ impl DashboardContract {
             .persistent()
             .get(&creator_dashboard_key(&creator))
             .unwrap_or_default()
+    }
+
+    /// Load the aggregated dashboard for `creator`, defaulting to empty metrics.
+    fn load(env: &Env, creator: &Address) -> CreatorDashboard {
+        env.storage()
+            .persistent()
+            .get(&creator_dashboard_key(creator))
+            .unwrap_or(CreatorDashboard {
+                invoice_count: 0,
+                total_volume: 0,
+                released_count: 0,
+                refunded_count: 0,
+                released_volume: 0,
+                refunded_volume: 0,
+            })
     }
 }
 
