@@ -34,6 +34,14 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 /// caller does not supply an explicit `batch_size`.
 pub const DEFAULT_MIGRATION_BATCH_SIZE: u32 = 50;
 
+/// Minimum lease (in ledgers) applied to invoice note metadata written by the
+/// v2 -> v3 key rename. Soroban persistent entries expire unless their TTL is
+/// extended; a migrated note must remain readable for at least this many
+/// ledgers after the migration runs. At ~5s per ledger this is roughly 30
+/// days, comfortably above the documented minimum lease for migrated
+/// metadata.
+pub const MIGRATED_META_MIN_TTL_LEDGERS: u32 = 518_400;
+
 /// Instance storage: current on-chain schema version.
 pub(crate) fn schema_version_key() -> Symbol {
     symbol_short!("schm_ver")
@@ -90,6 +98,42 @@ pub fn init_schema_version(env: &Env) {
 pub fn require_schema_current(env: &Env) {
     if schema_version(env) < CURRENT_SCHEMA_VERSION {
         panic_with_error!(env, ContractError::MigrationRequired);
+    }
+}
+
+/// Read-only progress view for upgrade operators, keyed by target version.
+///
+/// Reports how far a bounded, multi-call migration toward `target_version`
+/// has progressed. `processed` is the last invoice id the cursor has reached
+/// (0 when no chunk has run yet), `total` is the highest assigned invoice id
+/// at the time of the query, and `complete` is true once the schema has
+/// reached `target_version` (the cursor is cleared after each version
+/// completes). This lets operators distinguish a stalled upgrade from a
+/// progressing one without mutating any state.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MigrationProgress {
+    pub target_version: u32,
+    pub processed: u64,
+    pub total: u64,
+    pub complete: bool,
+}
+
+/// Query migration progress toward `target_version`. Read-only: never writes
+/// storage, so it is safe to call from any client at any time.
+pub fn migration_progress(env: &Env, target_version: u32) -> MigrationProgress {
+    let total: u64 = env.storage().persistent().get(&counter_key()).unwrap_or(0);
+    let complete = schema_version(env) >= target_version;
+    let processed = if complete {
+        total
+    } else {
+        get_migration_cursor(env, target_version)
+    };
+    MigrationProgress {
+        target_version,
+        processed,
+        total,
+        complete,
     }
 }
 
@@ -156,14 +200,17 @@ fn migration_v2(env: &Env, batch_size: u32) -> bool {
 // ---------------------------------------------------------------------------
 // The `inv_meta` key introduced at v2 is renamed to `inv_note` to match the
 // public `get_invoice_note` entry point. This demonstrates a pure key rename:
-// read under the old key, write under the new one, drop the old entry.
+// read under the old key, write under the new key, then drop the old entry.
+// Sparse legacy data (holes in the assigned id range) is handled by skipping
+// ids that have no v2 record, so no metadata is fabricated for holes.
 
 pub(crate) fn invoice_meta_key_v3(id: u64) -> (Symbol, u64) {
     (symbol_short!("inv_note"), id)
 }
 
 /// Process a bounded chunk of the v2 -> v3 key rename. Returns `true` when the
-/// migration is complete, `false` when more chunks remain.
+/// migration is complete (cursor reached `last_id`), `false` when more chunks
+/// remain.
 fn migration_v3(env: &Env, batch_size: u32) -> bool {
     let last_id: u64 = env.storage().persistent().get(&counter_key()).unwrap_or(0);
     let mut cursor = get_migration_cursor(env, 3);
@@ -175,10 +222,15 @@ fn migration_v3(env: &Env, batch_size: u32) -> bool {
     let mut id = cursor + 1;
     while id <= end {
         let old_key = invoice_meta_key_v2(id);
-        if let Some(meta) = env.storage().persistent().get::<_, InvoiceMeta>(&old_key) {
-            env.storage()
-                .persistent()
-                .set(&invoice_meta_key_v3(id), &meta);
+        if env.storage().persistent().has(&old_key) {
+            let meta: InvoiceMeta = env.storage().persistent().get(&old_key).unwrap();
+            let new_key = invoice_meta_key_v3(id);
+            env.storage().persistent().set(&new_key, &meta);
+            env.storage().persistent().extend_ttl(
+                &new_key,
+                MIGRATED_META_MIN_TTL_LEDGERS,
+                MIGRATED_META_MIN_TTL_LEDGERS,
+            );
             env.storage().persistent().remove(&old_key);
         }
         id += 1;
@@ -193,67 +245,99 @@ fn migration_v3(env: &Env, batch_size: u32) -> bool {
     }
 }
 
-/// Look up an invoice's note under its current (post-v3) storage key.
-pub fn get_invoice_meta(env: &Env, id: u64) -> Option<InvoiceMeta> {
-    env.storage().persistent().get(&invoice_meta_key_v3(id))
-}
-
-/// Run pending migrations in bounded chunks of `batch_size` invoice ids per
-/// call. Each step advances the stored schema version only once its chunked
-/// loop has fully completed, and persists a per-target-version cursor so a
-/// subsequent `migrate` call resumes where the previous transaction left off.
-/// Returns the resulting schema version (which may still be below
-/// [`CURRENT_SCHEMA_VERSION`] if more chunks remain).
-pub fn run_pending_migrations(env: &Env, batch_size: u32) -> u32 {
-    let batch_size = if batch_size == 0 {
-        DEFAULT_MIGRATION_BATCH_SIZE
-    } else {
-        batch_size
-    };
+/// Run every migration between the stored schema version and
+/// [`CURRENT_SCHEMA_VERSION`], one bounded chunk at a time. Returns `true`
+/// once the schema is fully current, `false` when more `migrate` calls are
+/// needed.
+pub fn run_pending_migrations(env: &Env, batch_size: u32) -> bool {
     let mut version = schema_version(env);
-    if version < 2 {
-        if migration_v2(env, batch_size) {
-            version = 2;
-            set_schema_version(env, version);
-        } else {
-            return version;
+    while version < CURRENT_SCHEMA_VERSION {
+        let done = match version {
+            1 => migration_v2(env, batch_size),
+            2 => migration_v3(env, batch_size),
+            _ => true,
+        };
+        if !done {
+            return false;
         }
+        version += 1;
+        set_schema_version(env, version);
     }
-    if version < 3 {
-        if migration_v3(env, batch_size) {
-            version = 3;
-            set_schema_version(env, version);
-        } else {
-            return version;
-        }
-    }
-    // Issue #36: Pedersen generators are pinned in instance storage during
-    // `initialize()`, but contracts that are upgraded via Soroban WASM upgrade
-    // never re-execute `initialize()`.  Lazily backfill the generators here so
-    // that confidential payment features work correctly on upgraded contracts.
-    ensure_pedersen_generators(env);
-    version
+    true
 }
 
-/// Backfill Pedersen commitment generators if they are absent from instance
-/// storage.  Safe to call on freshly-initialized contracts because the
-/// early-return means we never overwrite an already-established basis.
-pub fn ensure_pedersen_generators(env: &Env) {
-    if env.storage().instance().has(&pedersen_g_key())
-        && env.storage().instance().has(&pedersen_h_key())
-    {
-        return;
+#[cfg(test)]
+mod sparse_id_tests {
+    use super::*;
+
+    /// Build a v1-shaped store with sparse invoice ids: 1, 2, 5, 6, 9 exist
+    /// while 3, 4, 7, 8 are holes. The counter records the highest assigned
+    /// id (9), so the bounded cursor must walk across the holes.
+    fn seed_sparse_v1(env: &Env) {
+        let ids = [1u64, 2, 5, 6, 9];
+        for id in ids.iter() {
+            env.storage().persistent().set(&invoice_key(*id), &id);
+        }
+        env.storage().persistent().set(&counter_key(), &9u64);
+        // Absence of the schema key means version 1.
+        env.storage().instance().remove(&schema_version_key());
     }
-    let dst = soroban_sdk::Bytes::from_slice(env, b"SplitVault-Pedersen-BLS12381G1-v1");
-    let bls = env.crypto().bls12_381();
-    let g = bls.hash_to_g1(
-        &soroban_sdk::Bytes::from_slice(env, b"pedersen-generator-G"),
-        &dst,
-    );
-    let h = bls.hash_to_g1(
-        &soroban_sdk::Bytes::from_slice(env, b"pedersen-generator-H"),
-        &dst,
-    );
-    env.storage().instance().set(&pedersen_g_key(), &g);
-    env.storage().instance().set(&pedersen_h_key(), &h);
+
+    #[test]
+    fn sparse_ids_resume_across_batch_boundary() {
+        let env = Env::default();
+        seed_sparse_v1(&env);
+
+        // Batch size 2: first chunk covers ids 1..=2, second 3..=4 (all
+        // holes), third 5..=6, fourth 7..=8 (all holes), fifth 9..=9.
+        assert!(!run_pending_migrations(&env, 2));
+        assert_eq!(schema_version(&env), 1);
+        assert!(!run_pending_migrations(&env, 2));
+        assert!(!run_pending_migrations(&env, 2));
+        assert!(!run_pending_migrations(&env, 2));
+        assert!(run_pending_migrations(&env, 2));
+        assert_eq!(schema_version(&env), CURRENT_SCHEMA_VERSION);
+
+        // Existing ids got metadata; holes did not.
+        for id in [1u64, 2, 5, 6, 9].iter() {
+            assert!(env.storage().persistent().has(&invoice_meta_key_v3(*id)));
+            assert!(!env.storage().persistent().has(&invoice_meta_key_v2(*id)));
+        }
+        for id in [3u64, 4, 7, 8].iter() {
+            assert!(!env.storage().persistent().has(&invoice_meta_key_v2(*id)));
+            assert!(!env.storage().persistent().has(&invoice_meta_key_v3(*id)));
+        }
+    }
+
+    #[test]
+    fn sparse_ids_preserve_preexisting_metadata() {
+        let env = Env::default();
+        seed_sparse_v1(&env);
+
+        // Pre-seed a v2 note for id 5 (an existing invoice) with custom data.
+        let custom = InvoiceMeta {
+            note: String::from_str(&env, "legacy note"),
+            priority: 7,
+        };
+        env.storage()
+            .persistent()
+            .set(&invoice_meta_key_v2(5), &custom);
+
+        while !run_pending_migrations(&env, 2) {}
+
+        // The preexisting note survives the rename intact.
+        let migrated: InvoiceMeta = env
+            .storage()
+            .persistent()
+            .get(&invoice_meta_key_v3(5))
+            .unwrap();
+        assert_eq!(migrated, custom);
+        assert!(!env.storage().persistent().has(&invoice_meta_key_v2(5)));
+
+        // Holes still have no metadata at either key.
+        for id in [3u64, 4, 7, 8].iter() {
+            assert!(!env.storage().persistent().has(&invoice_meta_key_v2(*id)));
+            assert!(!env.storage().persistent().has(&invoice_meta_key_v3(*id)));
+        }
+    }
 }

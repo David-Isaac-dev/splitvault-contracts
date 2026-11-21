@@ -47,9 +47,10 @@ pub struct ComputeEstimate {
    - **Input Parameters**: `recipients` (`Vec<Address>`) or `recipient_count` (`u32`/`u64`).
    - **Methodology**: Scales linearly with the number of recipients and optional configuration flags.
 
-2. **`pay`** (`"pay"`)
+2. **`pay`** (`"pay"`, `"pay_dlgt"`)
    - **Input Parameters**: `invoice_id` (`u64`) or `recipient_count` (`u32`/`u64`).
    - **Methodology**: Accounts for base payment cost, shard storage updates, and auto-release payout overhead when an invoice is fully funded.
+   - **Delegated-payment alias**: `"pay_dlgt"` is an accepted alias for `"pay"`. It does **not** use a separate cost model — it resolves to the same `pay` estimate, so for equivalent inputs `estimate_compute("pay_dlgt", params)` returns exactly the same `ComputeEstimate` as `estimate_compute("pay", params)`.
 
 3. **`release`** (`"release"`)
    - **Input Parameters**: `invoice_id` (`u64`) or `recipient_count` (`u32`/`u64`).
@@ -95,7 +96,7 @@ The table below lists measured typical resource consumption ranges across suppor
 | Operation | CPU Instructions Range | Memory Range (Bytes) | Typical Fee Range (Stroops) |
 |---|---|---|---|
 | `create_invoice` (1-20 recipients) | 1,200,000 – 5,000,000 | 196,608 – 1,433,600 | 120 – 500 |
-| `pay` (1-20 recipients) | 1,800,000 – 6,800,000 | 262,144 – 896,000 | 180 – 680 |
+| `pay` / `pay_dlgt` (1-20 recipients) | 1,800,000 – 6,800,000 | 262,144 – 896,000 | 180 – 680 |
 | `release` (1-20 recipients) | 2,300,000 – 11,800,000 | 294,912 – 917,504 | 230 – 1,180 |
 | `refund` (1-10 payers) | 2,150,000 – 5,300,000 | 294,912 – 589,824 | 215 – 530 |
 | `open_dispute` | 1,200,000 | 131,072 | 120 |
