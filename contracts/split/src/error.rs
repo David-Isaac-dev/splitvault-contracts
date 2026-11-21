@@ -4,258 +4,169 @@ use soroban_sdk::contracterror;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum ContractError {
-    AlreadyInitialized = 1,
-    NotInitialized = 2,
-    Unauthorized = 3,
-    InvoiceNotFound = 4,
-    InvoiceNotOpen = 5,
-    InvoiceExpired = 6,
-    InvoiceAlreadyFunded = 7,
-    InvalidAmount = 8,
-    InvalidRecipients = 9,
-    InvalidDeadline = 10,
-    InvalidBps = 11,
-    Overflow = 12,
-    Underflow = 13,
-    Paused = 14,
-    FunctionPaused = 15,
-    InvalidStatus = 16,
-    AlreadyPaid = 17,
-    NotFunded = 18,
-    RefundNotAvailable = 19,
-    InvalidToken = 20,
-    TokenNotAccepted = 21,
-    ChannelExpired = 22,
-    StaleOraclePrice = 23,
-    DelegationNotFound = 24,
-    DelegationExpired = 25,
-    DelegationExceeded = 26,
-    DelegationAllowanceExceeded = 27,
-    InvalidDelegation = 28,
-    DisputeNotFound = 29,
-    DisputeAlreadyResolved = 30,
-    DisputeTimeout = 31,
-    InvalidSignature = 32,
-    NonceReused = 33,
-    InvalidProof = 34,
-    QuotaExceeded = 35,
-    TooManyRecipients = 36,
-    TooManyCoCreators = 37,
-    InvalidParent = 38,
-    ParentDepthExceeded = 39,
-    CycleDetected = 40,
-    InvalidTemplate = 41,
-    TemplateNotFound = 42,
-    InvalidInstalmentPlan = 43,
-    InstalmentNotFound = 44,
-    InstalmentAlreadyPaid = 45,
-    InvalidTranche = 46,
-    TrancheNotFound = 47,
-    InvalidCommitment = 48,
-    CommitmentNotFound = 49,
-    CommitmentExpired = 50,
-    InvalidSubscription = 51,
-    SubscriptionNotFound = 52,
-    SubscriptionCancelled = 53,
-    InvalidBid = 54,
-    BidNotFound = 55,
-    BidAlreadyAccepted = 56,
-    InvalidUpgrade = 57,
-    UpgradeNotFound = 58,
-    UpgradeAlreadyExecuted = 59,
-    TimelockNotExpired = 60,
-    InvalidRole = 61,
-    RoleNotFound = 62,
-    InvalidAdminAction = 63,
-    AdminActionNotFound = 64,
-    CircuitBreakerActive = 65,
-    CircuitBreakerNotActive = 66,
-    InvalidCircuitBreakerStatus = 67,
-    InvalidFeeBracket = 68,
-    FeeBracketNotFound = 69,
-    InvalidFeeTier = 70,
-    FeeTierNotFound = 71,
-    InvalidRebateTier = 72,
-    RebateTierNotFound = 73,
-    InvalidSplitRule = 74,
-    SplitRuleNotFound = 75,
-    InvalidResolveRule = 76,
-    ResolveRuleNotFound = 77,
-    InvalidOverflowBehavior = 78,
-    InvalidOverfundingPolicy = 79,
-    InvalidMetadata = 80,
-    MetadataNotFound = 81,
-    InvalidCertificate = 82,
-    CertificateNotFound = 83,
-    InvalidPaymentProof = 84,
-    PaymentProofNotFound = 85,
-    InvalidConfidentialPayment = 86,
-    ConfidentialPaymentNotFound = 87,
-    InvalidDelayedPayout = 88,
-    DelayedPayoutNotFound = 89,
-    InvalidTreasuryRecord = 90,
-    TreasuryRecordNotFound = 91,
-    InvalidTransferRecord = 92,
-    TransferRecordNotFound = 93,
-    InvalidAuditEntry = 94,
-    AuditEntryNotFound = 95,
-    InvalidTombstone = 96,
-    TombstoneNotFound = 97,
-    InvalidMigration = 98,
-    MigrationNotFound = 99,
-    InvalidStorageQuota = 100,
-    StorageQuotaExceeded = 101,
-    InvalidMaxOpenInvoices = 102,
-    MaxOpenInvoicesExceeded = 103,
-    InvalidSpendLimit = 104,
-    SpendLimitExceeded = 105,
-    InvalidVelocityLimit = 106,
-    VelocityLimitExceeded = 107,
-    InvalidFeeWaiver = 108,
-    FeeWaiverNotFound = 109,
-    InvalidReleaseDelay = 110,
-    ReleaseDelayNotElapsed = 111,
-    InvalidWhitelist = 112,
-    RecipientNotWhitelisted = 113,
-    InvalidMetadataHash = 114,
-    InvalidShard = 115,
-    ShardNotFound = 116,
-    InvalidArchive = 117,
-    ArchiveNotFound = 118,
-    InvalidLeaderboard = 119,
-    LeaderboardNotFound = 120,
-    InvalidRepScore = 121,
-    RepScoreNotFound = 122,
-    InvalidCompletionProof = 123,
-    CompletionProofNotFound = 124,
-    InvalidSimulation = 125,
-    SimulationFailed = 126,
-    InvalidComputeEstimate = 127,
-    ComputeEstimateNotFound = 128,
-    InvalidCloneOverrides = 129,
-    CloneOverridesNotFound = 130,
-    InvalidCompactInvoice = 131,
-    CompactInvoiceNotFound = 132,
-    InvalidCompactMigrateResult = 133,
-    CompactMigrateResultNotFound = 134,
-    InvalidLegacyInvoice = 135,
-    LegacyInvoiceNotFound = 136,
-    InvalidInvoiceCore = 137,
-    InvoiceCoreNotFound = 138,
-    InvalidInvoiceExt = 139,
-    InvoiceExtNotFound = 140,
-    InvalidInvoiceExt2 = 141,
-    InvoiceExt2NotFound = 142,
-    InvalidInvoiceExt3 = 143,
-    InvoiceExt3NotFound = 144,
-    InvalidInvoiceHot = 145,
-    InvoiceHotNotFound = 146,
-    InvalidInvoicePayment = 147,
-    InvoicePaymentNotFound = 148,
-    InvalidPaymentRecord = 149,
-    PaymentRecordNotFound = 150,
-    InvalidContributionResult = 151,
-    ContributionResultNotFound = 152,
-    InvalidCreatorStats = 153,
-    CreatorStatsNotFound = 154,
-    InvalidInvoiceStats = 155,
-    InvoiceStatsNotFound = 156,
-    InvalidProtocolFeeConfig = 157,
-    ProtocolFeeConfigNotFound = 158,
-    InvalidFeeSplit = 159,
-    FeeSplitNotFound = 160,
-    InvalidQueuedAction = 161,
-    QueuedActionNotFound = 162,
-    InvalidPendingAdminAction = 163,
-    PendingAdminActionNotFound = 164,
-    InvalidResolveAction = 165,
-    ResolveActionNotFound = 166,
-    InvalidDisputeOutcome = 167,
-    DisputeOutcomeNotFound = 168,
-    InvalidDisputeRecord = 169,
-    DisputeRecordNotFound = 170,
-    InvalidDisputeStatus = 171,
-    DisputeStatusNotFound = 172,
-    InvalidPaymentCommitment = 173,
-    PaymentCommitmentNotFound = 174,
-    InvalidPaymentCertificate = 175,
-    PaymentCertificateNotFound = 176,
-    InvalidInvoiceTemplate = 177,
-    InvoiceTemplateNotFound = 178,
-    InvalidInvoiceTemplateRecord = 179,
-    InvoiceTemplateRecordNotFound = 180,
-    InvalidInstalmentPlanRecord = 181,
-    InstalmentPlanRecordNotFound = 182,
-    InvalidTrancheRecord = 183,
-    TrancheRecordNotFound = 184,
-    InvalidBidRecord = 185,
-    BidRecordNotFound = 186,
-    InvalidUpgradeProposal = 187,
-    UpgradeProposalNotFound = 188,
-    InvalidAdminSet = 189,
-    AdminSetNotFound = 190,
-    InvalidAdminRole = 191,
-    AdminRoleNotFound = 192,
-    InvalidRoleAssignment = 193,
-    RoleAssignmentNotFound = 194,
-    InvalidDelegationAllowance = 195,
-    DelegationAllowanceNotFound = 196,
-    InvalidPayment = 197,
-    PaymentNotFound = 198,
-    InvalidRecipient = 199,
-    RecipientNotFound = 200,
-    InvalidInvoice = 201,
-    InvalidInvoiceOptions = 202,
-    InvalidInvoiceOptions2 = 203,
-    InvalidInvoiceStatus = 204,
-    InvalidInvoiceStatusTransition = 205,
-    InvalidInvoiceAmount = 206,
-    InvalidInvoiceDeadline = 207,
-    InvalidInvoiceRecipients = 208,
-    InvalidInvoiceCreator = 209,
-    InvalidInvoiceToken = 210,
-    InvalidInvoiceMetadata = 211,
-    InvalidInvoiceMetadataHash = 212,
-    InvalidInvoiceParent = 213,
-    InvalidInvoiceParentDepth = 214,
-    InvalidInvoiceCycle = 215,
-    InvalidInvoiceTemplateRef = 216,
-    InvalidInvoiceInstalmentPlan = 217,
-    InvalidInvoiceTranche = 218,
-    InvalidInvoiceCommitment = 219,
-    InvalidInvoiceSubscription = 220,
-    InvalidInvoiceBid = 221,
-    InvalidInvoiceUpgrade = 222,
-    InvalidInvoiceAdminAction = 223,
-    InvalidInvoiceCircuitBreaker = 224,
-    InvalidInvoiceFeeBracket = 225,
-    InvalidInvoiceFeeTier = 226,
-    InvalidInvoiceRebateTier = 227,
-    InvalidInvoiceSplitRule = 228,
-    InvalidInvoiceResolveRule = 229,
-    InvalidInvoiceOverflowBehavior = 230,
-    InvalidInvoiceOverfundingPolicy = 231,
-    InvalidInvoiceCertificate = 232,
-    InvalidInvoicePaymentProof = 233,
-    InvalidInvoiceConfidentialPayment = 234,
-    InvalidInvoiceDelayedPayout = 235,
-    InvalidInvoiceTreasuryRecord = 236,
-    InvalidInvoiceTransferRecord = 237,
-    InvalidInvoiceAuditEntry = 238,
-    InvalidInvoiceTombstone = 239,
-    InvalidInvoiceMigration = 240,
-    InvalidInvoiceStorageQuota = 241,
-    InvalidInvoiceMaxOpenInvoices = 242,
-    InvalidInvoiceSpendLimit = 243,
-    InvalidInvoiceVelocityLimit = 244,
-    InvalidInvoiceFeeWaiver = 245,
-    InvalidInvoiceReleaseDelay = 246,
-    InvalidInvoiceWhitelist = 247,
-    InvalidInvoiceShard = 248,
-    InvalidInvoiceArchive = 249,
-    InvalidInvoiceLeaderboard = 250,
-    InvalidInvoiceRepScore = 251,
-    InvalidInvoiceCompletionProof = 252,
-    InvalidInvoi
-
-/* … truncated 5342 chars — edit only what you need near the top … */
+    /// Caller is not authorized for this operation (missing admin/role/signer or wrong identity).
+    NotAuthorized = 1,
+    /// The referenced invoice id does not exist in storage.
+    InvoiceNotFound = 2,
+    /// The operation requires the invoice to still be open, but its deadline has already passed.
+    DeadlinePassed = 3,
+    /// The invoice has already been fully funded and a further fund would over-fund it.
+    AlreadyFunded = 4,
+    /// A supplied amount is non-positive, would overflow, or fails the invoice's amount rules.
+    InvalidAmount = 5,
+    /// The invoice (or a related entity) is frozen and the requested mutation is disallowed.
+    InvoiceFrozen = 6,
+    /// The invoice is not in a status that permits the requested operation.
+    InvalidStatus = 7,
+    /// The caller is not in the invoice's allowed-payer set (or `allowed_payers` rejects them).
+    PayerNotAllowed = 8,
+    /// The payment/fund amount is less than the remaining amount required to fund the invoice.
+    FundingInsufficient = 9,
+    /// A call to an external oracle/price/dependency contract returned an error or aborted.
+    OracleCallFailed = 10,
+    /// The caller is not the arbiter required to perform this dispute-related action.
+    NotArbiter = 11,
+    /// The operation is only valid while the invoice is under dispute, but no dispute is active.
+    NotDisputed = 12,
+    /// The action has already been executed and is not idempotent/retryable.
+    AlreadyExecuted = 13,
+    /// A time-lock / vesting window has not yet elapsed; the operation must wait.
+    TimelockPending = 14,
+    /// The contract is globally paused; all mutating entry points are blocked.
+    ContractPaused = 15,
+    /// The recipient list is invalid (e.g. mismatched lengths of recipients/amounts/tokens).
+    InvalidRecipients = 16,
+    /// A prerequisite (invoice, milestone, or dependency) that must be satisfied first is not met.
+    PrerequisiteNotMet = 17,
+    /// The requested batch exceeds the maximum number of items permitted in a single call.
+    BatchLimitExceeded = 18,
+    /// Issue #330: Recipient has already been paid on this invoice.
+    RecipientAlreadyPaid = 19,
+    /// Issue #327: Funds are still time-locked and cannot be released yet.
+    FundsLockedUntil = 20,
+    /// Aggregate protocol statistics would exceed their numeric bounds.
+    StatsOverflow = 21,
+    /// Oracle-priced invoice: the configured price oracle is unreachable or returned a
+    /// non-positive rate at payment time.
+    OracleUnavailable = 22,
+    /// Caller supplied a rating outside the valid range (e.g. 0, negative, or above the max score).
+    InvalidRating = 23,
+    /// Caller attempted to rate the same target more than once.
+    AlreadyRated = 24,
+    /// Caller exceeded the per-window rate limit for this operation.
+    RateLimitExceeded = 25,
+    /// Issue #438: Recipient reveal commitment does not match stored hash.
+    RecipientRevealMismatch = 26,
+    /// Issue #437: Delayed payout is not yet claimable (before claimable_at_ledger).
+    PayoutNotYetClaimable = 27,
+    /// Issue #435: Contract is frozen for upgrade; write operations are blocked.
+    ContractFrozen = 28,
+    /// Issue #431: Duplicate payment detected within the duplicate window.
+    DuplicatePayment = 29,
+    /// Issue #434: Invoice group member expired unfunded; group rollback triggered.
+    GroupMemberExpired = 30,
+    /// Issue #448: token balance deviated beyond slippage tolerance.
+    SlippageExceeded = 31,
+    /// Issue #449: invalid phase transition.
+    InvalidPhaseTransition = 32,
+    /// Issue #451: payer-provided memo does not match the required memo hash.
+    MemoMismatch = 33,
+    /// Issue #439: Creator is in cooldown after cancelling an invoice.
+    CreatorCooldownActive = 34,
+    /// Issue #420: Payment rejected because the invoice's `Cap` overfunding
+    /// policy does not allow `funded` to exceed the invoice total.
+    InvoiceFullyFunded = 35,
+    /// The provided ratios do not sum to exactly BASIS_POINTS_TOTAL (10 000).
+    InvalidRatioSum = 36,
+    /// The recipient/ratio list is empty; at least one entry is required.
+    EmptyRecipientList = 37,
+    /// Reentrant call detected: a fund-moving function was invoked recursively
+    /// within the same transaction. Cleared automatically at transaction boundary
+    /// because the lock lives in temporary storage.
+    ReentrantCall = 38,
+    /// RBAC: Caller does not hold the required role for this entry point.
+    RoleNotHeld = 39,
+    /// Issue #482: Intermediate multiplication or division overflowed i128 bounds.
+    ArithmeticOverflow = 40,
+    /// Issue #483: A zero-value or negative amount was passed where a positive amount is required.
+    ZeroAmountNotAllowed = 41,
+    /// Issue #485: Caller is not on the invoice contributor allowlist.
+    ContributorNotAllowed = 42,
+    /// Issue #473: Token is not in the allowed tokens list.
+    UnauthorisedToken = 43,
+    /// Issue #456: Invoice dependency chain - predecessor invoice is not yet Released.
+    DependencyNotMet = 44,
+    /// Issue #456: Circular dependency detected in invoice dependency chain.
+    CircularDependency = 45,
+    /// Issue #453: Source contract has exceeded its call rate limit within the current window.
+    SourceContractRateLimited = 46,
+    /// Issue #559: creator fee bps + platform fee bps exceeds cap of 10000.
+    FeeSumExceedsCap = 47,
+    /// Issue #562: operation not allowed on a soft-deleted invoice.
+    InvoiceDeleted = 48,
+    /// Issue #562: invoice has unclaimed funds and cannot be soft-deleted.
+    FundsUnclaimed = 49,
+    /// Issue #562: attempted to read tombstone for an invoice that is not deleted.
+    NotDeleted = 50,
+    /// Issue #519: An invoice status transition is not permitted by the state machine.
+    InvalidStateTransition = 52,
+    /// Issue #518: A split ratio is invalid (e.g. >= denominator or sum mismatch).
+    InvalidRatio = 53,
+    /// Storage migration framework: `schema_version` is behind the version
+    /// this Wasm build expects. Call `migrate` before retrying.
+    MigrationRequired = 54,
+    /// Issue #556: The recipient list supplied at invoice creation contains a
+    /// duplicate address. Rejected before any storage is written.
+    DuplicateRecipient = 55,
+    /// Issue #557: Split ratios are locked after the first contribution is
+    /// recorded and may no longer be mutated.
+    SplitRatioLocked = 56,
+    /// Issue #558: A recipient address has not established a trustline for the
+    /// payment token. The offending address is surfaced in the panic message.
+    RecipientMissingTrustline = 51,
+    /// Issue #503: Creator has reached their open invoice limit.
+    CreatorInvoiceLimitReached = 57,
+    /// Issue #503: Co-creator count would exceed the maximum allowed.
+    CoCreatorLimitReached = 58,
+    /// Invoice is under active dispute and cannot be released.
+    InvoiceDisputed = 59,
+    /// Issue #503: Payer spend limit would be exceeded by this payment.
+    PayerSpendLimitExceeded = 60,
+    /// Issue #505: Recipient account does not exist on-ledger.
+    RecipientAccountMissing = 61,
+    /// Recipient not found in the invoice recipient list.
+    RecipientNotFound = 62,
+    /// Issue #522: Parent chain depth exceeds the allowed maximum.
+    ParentChainTooDeep = 63,
+    /// Issue #564: Checkpoint index does not match stored value during payout recovery.
+    CheckpointMismatch = 64,
+    /// Issue #564: Recipient at this index has already been paid in a prior payout attempt.
+    AlreadyPaid = 65,
+    /// Recipient list is shorter than the configured minimum recipient count.
+    TooFewRecipients = 66,
+    /// Issue #29: A stage release was attempted out of order; the preceding stage has not been released yet.
+    PriorStageNotReleased = 67,
+    /// The payment channel has passed its expiry ledger.
+    ChannelExpired = 68,
+    /// The oracle price is older than the allowed freshness window.
+    StaleOraclePrice = 69,
+    /// The invoice does not accept this token.
+    TokenNotAccepted = 70,
+    /// The delegated payment allowance has expired.
+    DelegationExpired = 71,
+    /// The requested payment exceeds the delegated allowance.
+    DelegationAllowanceExceeded = 72,
+    /// Issue #88: `require_schema_current` detected a stale schema version.
+    /// Structured variant so RPC callers can inspect the error code and prompt
+    /// a migration workflow instead of seeing a generic WASM trap.
+    SchemaMigrationRequired = 101,
+    /// Issue #143: a clone has unpaired overrides or mismatched split vector lengths.
+    LengthMismatch = 102,
+    /// Issue #240: `trigger_reminder` was called for an account that has no
+    /// scheduled reminder (never set, already triggered, or cancelled).
+    ReminderNotSet = 103,
+    /// Issue #241: `place_bid` would exceed the documented per-auction bid capacity.
+    AuctionBidLimitExceeded = 104,
+    /// Issue #247: `estimate_compute` received a count input above the supported bound.
+    EstimateCountOutOfBounds = 105,
+}

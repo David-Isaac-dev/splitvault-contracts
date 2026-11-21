@@ -13,3 +13,14 @@ pub const MAX_INVOICE_TTL_LEDGERS: u32 = 31_536_000;
 /// Issue #37: Maximum age (in seconds) of an oracle price before it is considered stale.
 /// Defaults to 300 seconds (5 minutes); configurable via `set_oracle_max_staleness`.
 pub const ORACLE_MAX_STALE_SECONDS: u64 = 300;
+
+/// Issue #241: Maximum number of accepted bids an auction may hold.
+/// This bounds the work performed by `place_bid` (rejecting bids beyond capacity)
+/// and by `settle_auction` (which iterates every accepted bid), ensuring an auction
+/// at the documented capacity settles within the supported resource budget.
+pub const MAX_AUCTION_BIDS: u32 = 100;
+
+/// Issue #247: Maximum supported count input for `estimate_compute`.
+/// Aligned with the recipient limit so that the largest valid inputs return
+/// finite CPU and memory estimates; larger values return a typed error.
+pub const MAX_ESTIMATE_COUNT: u64 = 100;

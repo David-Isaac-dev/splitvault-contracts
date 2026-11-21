@@ -177,3 +177,15 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 
 <!-- handsoff-issue-64 -->
 - #64: Silent Payout Loss in `reveal_confidential_payment` Due to Omission of Shard Storage
+
+<!-- handsoff-issue-129 -->
+- #129: `auto_resolve` Refund Action Iterates Over Unpopulated Payments Vector Stranding Tokens
+
+<!-- handsoff-issue-130 -->
+- #130: Anonymous Invoice Mode Storage Key Is Never Set Making Anonymity Queries Always False
+
+<!-- handsoff-issue-131 -->
+- #131: Referral Reward Distribution Unimplemented in Release Workflow Leaving Fees Stranded
+
+<!-- handsoff-issue-132 -->
+- #132: `set_admin_set` Allows Duplicate Signer Addresses Undermining Multisig Quorum Security
