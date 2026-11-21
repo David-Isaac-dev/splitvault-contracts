@@ -163,4 +163,11 @@ pub enum ContractError {
     SchemaMigrationRequired = 101,
     /// Issue #143: a clone has unpaired overrides or mismatched split vector lengths.
     LengthMismatch = 102,
+    /// Issue #240: `trigger_reminder` was called for an account that has no
+    /// scheduled reminder (never set, already triggered, or cancelled).
+    ReminderNotSet = 103,
+    /// Issue #241: `place_bid` would exceed the documented per-auction bid capacity.
+    AuctionBidLimitExceeded = 104,
+    /// Issue #247: `estimate_compute` received a count input above the supported bound.
+    EstimateCountOutOfBounds = 105,
 }
