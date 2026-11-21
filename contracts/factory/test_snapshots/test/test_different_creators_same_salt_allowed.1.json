@@ -435,7 +435,17 @@
               }
             ],
             "data": {
-              "address": "CAMENPJWHNXTEOREAU4SFGKNH7LMSJZBC5LBPLCGT7ON2R3W4NRYMXNZ"
+              "vec": [
+                {
+                  "bytes": "33d12fec8f6f3ddf2eb0ec76ee9a75a9e37d1fa20af35908d90d278af8264311"
+                },
+                {
+                  "bytes": "0101010101010101010101010101010101010101010101010101010101010101"
+                },
+                {
+                  "address": "CAMENPJWHNXTEOREAU4SFGKNH7LMSJZBC5LBPLCGT7ON2R3W4NRYMXNZ"
+                }
+              ]
             }
           }
         }

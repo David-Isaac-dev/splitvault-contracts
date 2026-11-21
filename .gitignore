@@ -98,6 +98,7 @@ Cargo.lock.bak
 # Fuzz corpus (generated during fuzzing runs — seed files are
 # committed via explicit !fuzz/corpus/<target>/seed_* rules)
 # ============================================================
+fuzz/artifacts/
 fuzz/corpus/*
 !fuzz/corpus/fuzz_sequence/seed_zeros
 !fuzz/corpus/fuzz_sequence/seed_empty

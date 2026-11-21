@@ -162,7 +162,10 @@ mod tests {
     #[test]
     fn normalize_18_decimal_downscales() {
         // 18-decimal token: 1_000_000_000_000_000_000 raw (1 token) -> 10_000_000 canonical
-        assert_eq!(normalize_amount(1_000_000_000_000_000_000, 18).unwrap(), 10_000_000);
+        assert_eq!(
+            normalize_amount(1_000_000_000_000_000_000, 18).unwrap(),
+            10_000_000
+        );
     }
 
     #[test]
@@ -334,12 +337,24 @@ mod tests {
     #[test]
     fn normalize_negative_raw_always_errors() {
         // identity path (decimals == 7)
-        assert_eq!(normalize_amount(-1, 7), Err(ContractError::ArithmeticOverflow));
+        assert_eq!(
+            normalize_amount(-1, 7),
+            Err(ContractError::ArithmeticOverflow)
+        );
         // upscale path (decimals < 7)
-        assert_eq!(normalize_amount(-1, 0), Err(ContractError::ArithmeticOverflow));
-        assert_eq!(normalize_amount(-1, 6), Err(ContractError::ArithmeticOverflow));
+        assert_eq!(
+            normalize_amount(-1, 0),
+            Err(ContractError::ArithmeticOverflow)
+        );
+        assert_eq!(
+            normalize_amount(-1, 6),
+            Err(ContractError::ArithmeticOverflow)
+        );
         // downscale path (decimals > 7)
-        assert_eq!(normalize_amount(-1, 18), Err(ContractError::ArithmeticOverflow));
+        assert_eq!(
+            normalize_amount(-1, 18),
+            Err(ContractError::ArithmeticOverflow)
+        );
     }
 
     /// Very large raw values overflow when upscaling and must return Err(ArithmeticOverflow).

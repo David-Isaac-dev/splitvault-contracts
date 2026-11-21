@@ -14,6 +14,19 @@
 //! admin can cancel the pending proposal at any time via
 //! [`InvoiceEscrowContract::cancel_transfer`]. This prevents accidental or
 //! malicious lock-out by ensuring the new admin actively confirms the transfer.
+//!
+//! # Blacklist Recovery Policy
+//!
+//! A blacklist entry that has been finalised with `upheld == true` blocks the
+//! payer from depositing. Because finalisation is terminal, an administrative
+//! error (or an obsolete ban) can only be corrected through
+//! [`InvoiceEscrowContract::retire_blacklist`]. Retirement is admin-only, only
+//! applies to entries that are finalised and upheld, and restores the payer's
+//! eligibility (`is_payer_blacklisted` returns `false`). The prior outcome is
+//! preserved: the entry is marked `retired` and kept in persistent storage, and
+//! a retirement record is appended to the payer's history so the original
+//! upheld decision remains auditable.
+=======
 
 #![no_std]
 
@@ -24,9 +37,7 @@ mod types;
 mod test;
 
 use errors::Error;
-use soroban_sdk::{
-    contract, contractimpl, symbol_short, token, Address, BytesN, Env, Symbol, Vec,
-};
+use soroban_sdk::{contract, contractimpl, symbol_short, token, Address, BytesN, Env, Symbol, Vec};
 use types::{BlacklistEntry, EscrowInvoice, EscrowReleased, EscrowStatus};
 
 // ---------------------------------------------------------------------------
@@ -63,6 +74,11 @@ fn blacklist_key(payer: &Address) -> (Symbol, Address) {
     (symbol_short!("blacklist"), payer.clone())
 }
 
+/// Persistent storage: append-only history of retired blacklist outcomes.
+fn blacklist_history_key(payer: &Address) -> (Symbol, Address) {
+    (symbol_short!("bl_hist"), payer.clone())
+}
+
 /// Instance storage: reentrancy lock flag.
 fn lock_key() -> Symbol {
     symbol_short!("lock")
@@ -76,7 +92,7 @@ fn lock_key() -> Symbol {
 /// ~30 minutes at 5s ledger close time.
 const APPEAL_WINDOW_LEDGERS: u32 = 360;
 
-/// Minimum deposit amount in stroops (1 XLM = 10_000_000 stroops).
+/// Minimum partial deposit amount in stroops (1 XLM = 10_000_000 stroops).
 /// Prevents dust-spam attacks where an attacker floods the contract with
 /// 1-stroop deposits from thousands of addresses, bloating storage and
 /// exhausting refund instruction budgets.
@@ -86,6 +102,16 @@ const MIN_DEPOSIT_AMOUNT: i128 = 1_000_000;
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/// Load the stored admin and enforce host-level authorization.
+///
+/// Authorization is enforced by the host via [`Address::require_auth`] on the
+/// stored admin address. A caller that is not the admin therefore fails with a
+/// host authorization error (the invocation aborts) rather than a typed
+/// [`Error::NotAdmin`] value. Callers that need a typed error must check the
+/// admin address themselves before invoking this helper.
+///
+/// # Panics
+/// Panics with `"not initialized"` if the contract has not been initialized.
 fn require_admin(env: &Env) -> Address {
     let admin: Address = env
         .storage()
@@ -154,11 +180,18 @@ fn emit_admin_transfer_cancelled(env: &Env, admin: &Address, cancelled: &Address
     );
 }
 
-/// Topics: `(escrow, created, id)` — Data: `(creator, total_amount, deadline)`
-fn emit_invoice_created(env: &Env, id: u64, creator: &Address, total: i128, deadline: u64) {
+/// Topics: `(escrow, created, id)` — Data: `(creator, token, total_amount, deadline)`
+fn emit_invoice_created(
+    env: &Env,
+    id: u64,
+    creator: &Address,
+    token: &Address,
+    total: i128,
+    deadline: u64,
+) {
     env.events().publish(
         (symbol_short!("escrow"), symbol_short!("created"), id),
-        (creator.clone(), total, deadline),
+        (creator.clone(), token.clone(), total, deadline),
     );
 }
 
@@ -170,19 +203,42 @@ fn emit_deposited(env: &Env, id: u64, payer: &Address, amount: i128, funded: i12
     );
 }
 
-/// Topics: `(escrow, released, id)` — Data: total_amount
-fn emit_released(env: &Env, id: u64, total: i128) {
+/// Publish the legacy release event followed by the structured release event.
+fn emit_released(env: &Env, id: u64, recipient: &Address, total: i128) {
     env.events().publish(
         (symbol_short!("escrow"), symbol_short!("released"), id),
         total,
     );
+    env.events().publish(
+        (symbol_short!("escrow"), symbol_short!("released")),
+        EscrowReleased {
+            invoice_id: id,
+            recipient: recipient.clone(),
+            amount: total,
+        },
+    );
 }
 
 /// Topics: `(escrow, refunded, id)` — Data: (payer, amount)
+///
+/// Per-payer transfer event emitted for every refunded deposit.
 fn emit_refunded(env: &Env, id: u64, payer: &Address, amount: i128) {
     env.events().publish(
         (symbol_short!("escrow"), symbol_short!("refunded"), id),
         (payer.clone(), amount),
+    );
+}
+
+/// Topics: `(escrow, ref_cmpl, id)` — Data: total_refunded
+///
+/// Invoice-level completion event emitted exactly once, when the final refund
+/// batch transitions the invoice into `Refunded`. Distinct from the per-payer
+/// [`emit_refunded`] transfer events so indexers can detect completion without
+/// polling storage.
+fn emit_refund_completed(env: &Env, id: u64, total_refunded: i128) {
+    env.events().publish(
+        (symbol_short!("escrow"), symbol_short!("ref_cmpl"), id),
+        total_refunded,
     );
 }
 
@@ -207,6 +263,14 @@ fn emit_blacklist_finalised(env: &Env, payer: &Address, upheld: bool) {
     env.events().publish(
         (symbol_short!("blacklist"), symbol_short!("bl_fin")),
         (payer.clone(), upheld),
+    );
+}
+
+/// Topics: `(blacklist, bl_ret)` — Data: `(payer, reason_hash, ledger)`
+fn emit_blacklist_retired(env: &Env, payer: &Address, reason_hash: &BytesN<32>) {
+    env.events().publish(
+        (symbol_short!("blacklist"), symbol_short!("bl_ret")),
+        (payer.clone(), reason_hash.clone(), env.ledger().sequence()),
     );
 }
 
@@ -362,13 +426,15 @@ impl InvoiceEscrowContract {
     /// * `creator`      — Address that creates and owns this invoice.
     /// * `token`        — Token contract (e.g. USDC).
     /// * `total_amount` — Total amount needed to fully fund the invoice.
-    /// * `deadline`     — Unix timestamp after which refunds are available.
+    /// * `deadline`     — Unix timestamp after which refunds are available. May
+    ///                    equal the current ledger timestamp.
     ///
     /// Returns the new invoice ID.
     ///
     /// # Errors
     /// * [`Error::NotInitialized`]   — Contract not initialized.
     /// * [`Error::InvalidTotalAmount`] — `total_amount` ≤ 0.
+    /// * [`Error::DeadlinePassed`] — `deadline` precedes the current ledger timestamp.
     pub fn create_invoice(
         env: Env,
         creator: Address,
@@ -382,13 +448,12 @@ impl InvoiceEscrowContract {
         if total_amount <= 0 {
             return Err(Error::InvalidTotalAmount);
         }
+        if deadline < env.ledger().timestamp() {
+            return Err(Error::DeadlinePassed);
+        }
         creator.require_auth();
 
-        let id: u64 = env
-            .storage()
-            .instance()
-            .get(&counter_key())
-            .unwrap_or(0u64);
+        let id: u64 = env.storage().instance().get(&counter_key()).unwrap_or(0u64);
         let next_id = id.checked_add(1).expect("invoice counter overflow");
         env.storage().instance().set(&counter_key(), &next_id);
 
@@ -401,7 +466,7 @@ impl InvoiceEscrowContract {
             status: EscrowStatus::Pending,
         };
         save_invoice(&env, id, &invoice);
-        emit_invoice_created(&env, id, &creator, total_amount, deadline);
+        emit_invoice_created(&env, id, &creator, &invoice.token, total_amount, deadline);
         Ok(id)
     }
 
@@ -411,6 +476,9 @@ impl InvoiceEscrowContract {
     /// If the deposit completes funding the invoice, the funds are immediately
     /// released to the creator (auto-release on full funding).
     ///
+    /// Partial deposits must meet the minimum. Any positive deposit that exactly
+    /// covers the remaining balance can complete funding.
+    ///
     /// Blacklisted payers (finalised + upheld) are blocked from depositing.
     ///
     /// # Errors
@@ -418,7 +486,7 @@ impl InvoiceEscrowContract {
     /// * [`Error::InvalidStatus`]      — Invoice is not `Pending` or `Active`.
     /// * [`Error::DeadlinePassed`]     — Deposit window has closed.
     /// * [`Error::InvalidAmount`]      — `amount` ≤ 0.
-    /// * [`Error::DepositTooSmall`]    — `amount` is below the minimum threshold.
+    /// * [`Error::DepositTooSmall`]    — A partial deposit is below the minimum threshold.
     /// * [`Error::OverFunded`]         — Deposit would exceed `total_amount`.
     /// * [`Error::PayerBlacklisted`]   — Payer is finalised-blacklisted.
     /// * [`Error::Reentrancy`]         — Reentrant call detected.
@@ -428,10 +496,6 @@ impl InvoiceEscrowContract {
         if amount <= 0 {
             release_lock(&env);
             return Err(Error::InvalidAmount);
-        }
-        if amount < MIN_DEPOSIT_AMOUNT {
-            release_lock(&env);
-            return Err(Error::DepositTooSmall);
         }
         payer.require_auth();
 
@@ -463,14 +527,16 @@ impl InvoiceEscrowContract {
             release_lock(&env);
             return Err(Error::DeadlinePassed);
         }
-        let new_funded = invoice
-            .funded_amount
-            .checked_add(amount)
-            .expect("funded_amount overflow");
-        if new_funded > invoice.total_amount {
+        let remaining = invoice.total_amount - invoice.funded_amount;
+        if amount > remaining {
             release_lock(&env);
             return Err(Error::OverFunded);
         }
+        if amount < MIN_DEPOSIT_AMOUNT && amount < remaining {
+            release_lock(&env);
+            return Err(Error::DepositTooSmall);
+        }
+        let new_funded = invoice.funded_amount + amount;
 
         // Pull funds from payer into the contract.
         let token_client = token::Client::new(&env, &invoice.token);
@@ -492,13 +558,13 @@ impl InvoiceEscrowContract {
         emit_deposited(&env, invoice_id, &payer, amount, new_funded);
 
         // Auto-release on full funding.
-        if new_funded >= invoice.total_amount {
+        if amount == remaining {
             let total = invoice.total_amount;
             let creator = invoice.creator.clone();
             invoice.status = EscrowStatus::Released;
             save_invoice(&env, invoice_id, &invoice);
             token_client.transfer(&env.current_contract_address(), &creator, &total);
-            emit_released(&env, invoice_id, total);
+            emit_released(&env, invoice_id, &creator, total);
         } else {
             save_invoice(&env, invoice_id, &invoice);
         }
@@ -547,17 +613,7 @@ impl InvoiceEscrowContract {
 
         let token_client = token::Client::new(&env, &invoice.token);
         token_client.transfer(&env.current_contract_address(), &creator, &total);
-        emit_released(&env, invoice_id, total);
-
-        // Emit structured EscrowReleased event for off-chain indexers.
-        env.events().publish(
-            (symbol_short!("escrow"), symbol_short!("released")),
-            EscrowReleased {
-                invoice_id,
-                recipient: creator,
-                amount: total,
-            },
-        );
+        emit_released(&env, invoice_id, &creator, total);
 
         release_lock(&env);
         Ok(())
@@ -575,6 +631,8 @@ impl InvoiceEscrowContract {
     /// and transitions to `Refunded` only once `funded_amount` reaches zero,
     /// i.e. every recorded deposit has been returned.  This prevents the first
     /// batch from permanently locking out subsequent batches.
+    /// Legacy invoices marked `Refunded` early can still refund outstanding
+    /// deposits.
     ///
     /// # Arguments
     /// * `invoice_id` — Target invoice.
@@ -582,7 +640,8 @@ impl InvoiceEscrowContract {
     ///
     /// # Errors
     /// * [`Error::InvoiceNotFound`]    — Unknown invoice ID.
-    /// * [`Error::InvalidStatus`]      — Invoice already released or refunded.
+    /// * [`Error::InvalidStatus`]      — Invoice was released or cancelled, or
+    ///   was marked refunded and this batch has no outstanding deposits.
     /// * [`Error::DeadlineNotPassed`]  — Deadline has not expired yet.
     /// * [`Error::Reentrancy`]         — Reentrant call detected.
     pub fn refund(env: Env, invoice_id: u64, payers: Vec<Address>) -> Result<(), Error> {
@@ -596,10 +655,7 @@ impl InvoiceEscrowContract {
             }
         };
 
-        if invoice.status == EscrowStatus::Released
-            || invoice.status == EscrowStatus::Refunded
-            || invoice.status == EscrowStatus::Cancelled
-        {
+        if invoice.status == EscrowStatus::Released || invoice.status == EscrowStatus::Cancelled {
             release_lock(&env);
             return Err(Error::InvalidStatus);
         }
@@ -609,6 +665,8 @@ impl InvoiceEscrowContract {
         }
 
         let token_client = token::Client::new(&env, &invoice.token);
+        let mut refunded_total: i128 = 0;
+        let mut refunded_deposit = false;
         for payer in payers.iter() {
             let amount: i128 = env
                 .storage()
@@ -623,8 +681,15 @@ impl InvoiceEscrowContract {
                 // Issue #42: decrement funded_amount so the contract tracks
                 // how much remains to be refunded across batches.
                 invoice.funded_amount = invoice.funded_amount.saturating_sub(amount);
+                refunded_total = refunded_total.saturating_add(amount);
+                refunded_deposit = true;
                 emit_refunded(&env, invoice_id, &payer, amount);
             }
+        }
+
+        if invoice.status == EscrowStatus::Refunded && !refunded_deposit {
+            release_lock(&env);
+            return Err(Error::InvalidStatus);
         }
 
         // Issue #42: only mark the invoice as fully refunded once all recorded
@@ -633,8 +698,13 @@ impl InvoiceEscrowContract {
         // rejected by the InvalidStatus guard above.
         if invoice.funded_amount == 0 {
             invoice.status = EscrowStatus::Refunded;
+            save_invoice(&env, invoice_id, &invoice);
+            // Issue #228: emit exactly one invoice-level completion event when
+            // the invoice crosses into Refunded (the final batch).
+            emit_refund_completed(&env, invoice_id, refunded_total);
+        } else {
+            save_invoice(&env, invoice_id, &invoice);
         }
-        save_invoice(&env, invoice_id, &invoice);
 
         release_lock(&env);
         Ok(())
@@ -647,8 +717,14 @@ impl InvoiceEscrowContract {
     /// this call does not transfer tokens, avoiding unbounded iteration over
     /// unknown payers.
     ///
+    /// # Authorization
+    /// The admin is authenticated by the host via `require_auth` on the stored
+    /// admin address. A non-admin caller therefore fails with a host
+    /// authorization error (the invocation aborts) rather than a typed
+    /// [`Error::NotAdmin`] value.
+    ///
     /// # Errors
-    /// * [`Error::NotAdmin`]      — Caller is not the admin.
+    /// * [`Error::NotInitialized`]  — Contract has not been initialized.
     /// * [`Error::InvoiceNotFound`] — Unknown invoice ID.
     /// * [`Error::InvalidStatus`]   — Invoice not in a cancellable state.
     pub fn cancel_invoice(env: Env, invoice_id: u64) -> Result<(), Error> {
@@ -699,11 +775,7 @@ impl InvoiceEscrowContract {
         if !env.storage().instance().has(&admin_key()) {
             return Err(Error::NotInitialized);
         }
-        let stored_admin: Address = env
-            .storage()
-            .instance()
-            .get(&admin_key())
-            .unwrap();
+        let stored_admin: Address = env.storage().instance().get(&admin_key()).unwrap();
         if admin != stored_admin {
             return Err(Error::NotAdmin);
         }
@@ -767,9 +839,7 @@ impl InvoiceEscrowContract {
         // The appeal must be submitted within APPEAL_WINDOW_LEDGERS ledgers of
         // the ban, eliminating drift from variable ledger close times.
         let current_ledger = env.ledger().sequence();
-        let appeal_deadline = entry
-            .ban_ledger
-            .saturating_add(APPEAL_WINDOW_LEDGERS);
+        let appeal_deadline = entry.ban_ledger.saturating_add(APPEAL_WINDOW_LEDGERS);
         if current_ledger > appeal_deadline {
             return Err(Error::AppealWindowExpired);
         }
@@ -781,10 +851,8 @@ impl InvoiceEscrowContract {
         emit_appeal_submitted(&env, &payer, &appeal_hash);
 
         // Log invoice context in event
-        env.events().publish(
-            (symbol_short!("appeal"), invoice_id),
-            payer,
-        );
+        env.events()
+            .publish((symbol_short!("appeal"), invoice_id), payer);
         Ok(())
     }
 
@@ -816,11 +884,7 @@ impl InvoiceEscrowContract {
         if !env.storage().instance().has(&admin_key()) {
             return Err(Error::NotInitialized);
         }
-        let stored_admin: Address = env
-            .storage()
-            .instance()
-            .get(&admin_key())
-            .unwrap();
+        let stored_admin: Address = env.storage().instance().get(&admin_key()).unwrap();
         if admin != stored_admin {
             return Err(Error::NotAdmin);
         }
@@ -844,12 +908,81 @@ impl InvoiceEscrowContract {
                 .set(&blacklist_key(&payer), &entry);
         } else {
             // Reinstate: remove the blacklist entry.
-            env.storage()
-                .persistent()
-                .remove(&blacklist_key(&payer));
+            env.storage().persistent().remove(&blacklist_key(&payer));
         }
 
         emit_blacklist_finalised(&env, &payer, uphold);
+        Ok(())
+    }
+
+    /// Retire a finalised, upheld blacklist entry (administrative recovery).
+    ///
+    /// This is the documented recovery path for mistaken or obsolete bans.
+    /// Only the admin may call it, and only for entries that are already
+    /// finalised with `upheld == true`. The active ban is cleared so
+    /// [`Self::is_payer_blacklisted`] returns `false`, while the prior outcome
+    /// is preserved: the entry is marked `retired` (keeping `upheld` and
+    /// `reason_hash`) and a retirement record is appended to the payer's
+    /// history.
+    ///
+    /// # Arguments
+    /// * `admin` — Contract admin (must authenticate).
+    /// * `payer` — The blacklisted payer whose ban is being retired.
+    ///
+    /// # Events
+    /// Emits `("blacklist", "bl_ret")` with `(payer, reason_hash, ledger)`.
+    ///
+    /// # Errors
+    /// * [`Error::NotInitialized`] if contract is not initialized.
+    /// * [`Error::NotAdmin`] if caller is not the admin.
+    /// * [`Error::NotBlacklisted`] if payer has no blacklist entry.
+    /// * [`Error::InvalidStatus`] if the entry is not finalised and upheld.
+    pub fn retire_blacklist(
+        env: Env,
+        admin: Address,
+        payer: Address,
+    ) -> Result<(), Error> {
+        if !env.storage().instance().has(&admin_key()) {
+            return Err(Error::NotInitialized);
+        }
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&admin_key())
+            .unwrap();
+        if admin != stored_admin {
+            return Err(Error::NotAdmin);
+        }
+        admin.require_auth();
+
+        let mut entry: BlacklistEntry = env
+            .storage()
+            .persistent()
+            .get(&blacklist_key(&payer))
+            .ok_or(Error::NotBlacklisted)?;
+
+        if !entry.finalised || !entry.upheld {
+            return Err(Error::InvalidStatus);
+        }
+
+        // Preserve the prior outcome in append-only history.
+        let mut history: Vec<BlacklistEntry> = env
+            .storage()
+            .persistent()
+            .get(&blacklist_history_key(&payer))
+            .unwrap_or_else(|| Vec::new(&env));
+        history.push_back(entry.clone());
+        env.storage()
+            .persistent()
+            .set(&blacklist_history_key(&payer), &history);
+
+        // Clear the active ban while keeping the outcome on record.
+        entry.retired = true;
+        env.storage()
+            .persistent()
+            .set(&blacklist_key(&payer), &entry);
+
+        emit_blacklist_retired(&env, &payer, &entry.reason_hash);
         Ok(())
     }
 
@@ -919,16 +1052,34 @@ impl InvoiceEscrowContract {
 
     /// Return the blacklist entry for a payer, if any.
     pub fn get_blacklist_entry(env: Env, payer: Address) -> Option<BlacklistEntry> {
-        env.storage()
-            .persistent()
-            .get(&blacklist_key(&payer))
+        env.storage().persistent().get(&blacklist_key(&payer))
     }
 
     /// Return `true` if the payer is blacklisted with a finalised and upheld entry.
+    ///
+    /// Retired entries no longer count as an active ban.
     pub fn is_payer_blacklisted(env: Env, payer: Address) -> bool {
         env.storage()
             .persistent()
             .get::<_, BlacklistEntry>(&blacklist_key(&payer))
-            .map_or(false, |entry| entry.finalised && entry.upheld)
+            .map_or(false, |entry| entry.finalised && entry.upheld && !entry.retired)
+    }
+
+    /// Return the effective last ledger on which an appeal is accepted.
+    ///
+    /// The returned value is `ban_ledger + APPEAL_WINDOW_LEDGERS`. An appeal
+    /// submitted at exactly this ledger is accepted; one submitted at
+    /// `returned + 1` is rejected with [`Error::AppealWindowExpired`]. This
+    /// matches the comparison performed by [`Self::submit_appeal`].
+    ///
+    /// # Errors
+    /// * [`Error::NotBlacklisted`] if the payer has no blacklist entry.
+    pub fn get_appeal_deadline(env: Env, payer: Address) -> Result<u32, Error> {
+        let entry: BlacklistEntry = env
+            .storage()
+            .persistent()
+            .get(&blacklist_key(&payer))
+            .ok_or(Error::NotBlacklisted)?;
+        Ok(entry.ban_ledger.saturating_add(APPEAL_WINDOW_LEDGERS))
     }
 }
