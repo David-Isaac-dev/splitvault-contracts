@@ -3,7 +3,7 @@
   <h1>split-contracts</h1>
 </div>
 
-![Rust](https://img.shields.io/badge/Rust-1.84+-orange?logo=rust)
+![Rust](https://img.shields.io/badge/Rust-1.93+-orange?logo=rust)
 ![Soroban SDK](https://img.shields.io/badge/soroban--sdk-28-blueviolet)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![CI](https://github.com/splitvault/split-contracts/actions/workflows/test.yml/badge.svg)
@@ -20,7 +20,7 @@ SplitVault lets users create on-chain invoices where multiple payers each owe a 
 
 | Layer | Technology |
 |-------|-----------|
-| Language | Rust 1.84+ |
+| Language | Rust 1.93+ |
 | Smart Contract SDK | soroban-sdk 28 |
 | Test Runner | `cargo test` |
 | Deploy Tool | stellar-cli |
@@ -59,8 +59,32 @@ Soroban SDK 28 contracts must use `wasm32v1-none` and `stellar contract build`.
 ### Run Tests
 
 ```bash
-cargo test --workspace
+cargo test --locked --workspace
 ```
+
+### Fuzzing
+
+Run these commands from the repository root with the nightly in
+`rust-toolchain.toml`. Keep the standalone `fuzz/Cargo.lock` in sync with
+dependency changes. CI uses it for the cache key, checks dependency resolution
+with `--locked`, and verifies that fuzzing leaves the file unchanged.
+
+```bash
+cargo install --locked --version 0.13.2 cargo-fuzz
+cargo check --locked --manifest-path fuzz/Cargo.toml
+cargo fuzz run fuzz_create_invoice -- -max_total_time=60
+```
+
+### Testnet Deployment
+
+The manually triggered **Deploy to Testnet** workflow uses Stellar CLI
+`28.1.0` and logs the installed version. After a successful deployment,
+download `testnet-deployment.json` from the run's **testnet-deployment**
+artifact. The fields are `network`, `contract_id`, `commit_sha`, and
+`wasm_sha256` (the SHA-256 digest of the deployed WASM file).
+
+With `jq` installed, run the offline manifest fixture with
+`bash scripts/test-testnet-deployment-manifest.sh`.
 
 ## Contract Function Reference
 
@@ -153,3 +177,15 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 
 <!-- handsoff-issue-64 -->
 - #64: Silent Payout Loss in `reveal_confidential_payment` Due to Omission of Shard Storage
+
+<!-- handsoff-issue-129 -->
+- #129: `auto_resolve` Refund Action Iterates Over Unpopulated Payments Vector Stranding Tokens
+
+<!-- handsoff-issue-130 -->
+- #130: Anonymous Invoice Mode Storage Key Is Never Set Making Anonymity Queries Always False
+
+<!-- handsoff-issue-131 -->
+- #131: Referral Reward Distribution Unimplemented in Release Workflow Leaving Fees Stranded
+
+<!-- handsoff-issue-132 -->
+- #132: `set_admin_set` Allows Duplicate Signer Addresses Undermining Multisig Quorum Security

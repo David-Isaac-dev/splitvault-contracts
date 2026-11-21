@@ -41,7 +41,7 @@ git checkout -b fix/issue-42-short-description
 - Write clean, well-commented Rust code.
 - Add or update tests in `contracts/split/src/test.rs`.
 - Run `cargo test --workspace` and ensure all tests pass.
-- Run `cargo clippy` and fix any warnings.
+- Run `cargo clippy --workspace --locked -- -D clippy::dbg_macro`. Compiler errors and denied lints (including `clippy::dbg_macro`) block CI. Other warnings are advisory.
 - Run `cargo fmt` to format your code.
 - See [CI replay and size reports](docs/CI_REPLAY.md) for the CI checklist,
   fuzz failure replay, and release WASM comparisons, and

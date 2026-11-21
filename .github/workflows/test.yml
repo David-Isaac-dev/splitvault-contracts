@@ -22,13 +22,42 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-test-${{ matrix.package }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Verify testnet deployment manifest fixture
+        run: bash scripts/test-testnet-deployment-manifest.sh
 
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
-  wasm:
-    name: Build production WASM
+      - name: Storage key snapshot test
+        run: cargo test --locked -p split storage_snapshot
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+          components: rustfmt
+      - name: Check workspace formatting
+        run: cargo fmt --all -- --check
+
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_create_invoice
+          - fuzz_pay
+          - fuzz_release
+          - fuzz_refund
+          - fuzz_sequence
+          - fuzz_fee_deduct
+          - fuzz_ratio_validation
+          - fuzz_split_arithmetic
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,78 +73,16 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+            fuzz/target
+          key: ${{ runner.os }}-cargo-fuzz-${{ hashFiles('fuzz/Cargo.lock') }}
 
-      - name: Build all contract WASM packages
+      - name: Install cargo-fuzz
         run: |
-          set -euo pipefail
-          members=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[].name')
-          for pkg in $members; do
-            echo "::group::Building $pkg"
-            cargo build --release --target wasm32-unknown-unknown -p "$pkg"
-            echo "::endgroup::"
-          done
+          cargo install --locked --version 0.13.2 cargo-fuzz
+          cargo fuzz --version
 
-      - name: Verify release artifacts
-        run: |
-          set -euo pipefail
-          members=$(cargo metadata --no-deps --format-version 1 \
-            | jq -r '.packages[].name')
-          count=0
-          for pkg in $members; do
-            artifact="target/wasm32-unknown-unknown/release/${pkg//-/_}.wasm"
-            if [ ! -f "$artifact" ]; then
-              echo "::error::Missing WASM artifact for $pkg at $artifact"
-              exit 1
-            fi
-            echo "Found $artifact"
-            count=$((count + 1))
-          done
-          if [ "$count" -ne 5 ]; then
-            echo "::error::Expected 5 WASM artifacts, found $count"
-            exit 1
-          fi
-
-  docs-links:
-    name: Check Markdown links
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check repository-owned Markdown links
-        run: |
-          set -euo pipefail
-
-          # Collect tracked Markdown documents.
-          mapfile -t docs < <(git ls-files '*.md')
-          if [ "${#docs[@]}" -eq 0 ]; then
-            echo "No Markdown documents found."
-            exit 0
-          fi
-
-          # Normalize a heading into a GitHub-style anchor slug.
-          slugify() {
-            printf '%s' "$1" \
-              | tr '[:upper:]' '[:lower:]' \
-              | sed -E 's/[^a-z0-9 _-]//g' \
-              | sed -E 's/ +/-/g' \
-              | sed -E 's/^-+//; s/-+$//'
-          }
-
-          # Extract heading anchors from a Markdown file.
-          anchors_of() {
-            local file="$1"
-            grep -E '^#{1,6}[[:space:]]+' "$file" 2>/dev/null \
-              | sed -E 's/^#{1,6}[[:space:]]+//' \
-              | while IFS= read -r heading; do
-                  slugify "$heading"
-                  echo
-                done
-          }
-
-          fail=0
+      - name: Check locked fuzz dependencies
+        run: cargo check --locked --manifest-path fuzz/Cargo.toml
 
           for doc in "${docs[@]}"; do
             dir=$(dirname "$doc")

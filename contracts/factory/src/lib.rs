@@ -71,20 +71,29 @@ pub const FACTORY_RECORD_MAX_TTL: u32 = 6_307_200;
 /// Emitted when a new split contract is deployed by the factory.
 ///
 /// Topics: `(factory, deployed, creator)`
-/// Data: `contract_address`
+/// Data: `(wasm_hash, salt, contract_address)`. The effective deployment
+/// salt is `sha256(creator_xdr || salt)`.
 ///
 /// # Parameters
 /// * `env`              — The current Soroban execution environment.
 /// * `creator`          — The address that triggered the deployment.
+/// * `wasm_hash`        — The deployed WASM bytecode hash.
+/// * `salt`             — The creator-supplied salt.
 /// * `contract_address` — The address of the newly deployed contract.
-pub fn contract_deployed(env: &Env, creator: &Address, contract_address: &Address) {
+pub fn contract_deployed(
+    env: &Env,
+    creator: &Address,
+    wasm_hash: &BytesN<32>,
+    salt: &BytesN<32>,
+    contract_address: &Address,
+) {
     env.events().publish(
         (
             symbol_short!("factory"),
             symbol_short!("deployed"),
             creator.clone(),
         ),
-        contract_address.clone(),
+        (wasm_hash.clone(), salt.clone(), contract_address.clone()),
     );
 }
 
@@ -321,7 +330,7 @@ impl SplitFactory {
         let deployed_address = env
             .deployer()
             .with_current_contract(effective_salt)
-            .deploy(wasm_hash);
+            .deploy(wasm_hash.clone());
 
         // Invoke init on the deployed contract if init_args is non-empty.
         //
@@ -369,7 +378,7 @@ impl SplitFactory {
         );
 
         // Emit event.
-        contract_deployed(&env, &creator, &deployed_address);
+        contract_deployed(&env, &creator, &wasm_hash, &salt, &deployed_address);
 
         deployed_address
     }
@@ -598,12 +607,17 @@ mod test {
         let salt = BytesN::from_array(&env, &[1u8; 32]);
         let init_args = Vec::<Val>::new(&env);
 
-        factory_client.deploy_invoice_contract(&creator, &wasm_hash, &salt, &init_args);
-
-        // Verify the ContractDeployed event was emitted.
+        let deployed =
+            factory_client.deploy_invoice_contract(&creator, &wasm_hash, &salt, &init_args);
+        let as_xdr = |value: Val| ScVal::try_from_val(&env, &value).unwrap();
+        let expected_topics = [
+            as_xdr(symbol_short!("factory").into_val(&env)),
+            as_xdr(symbol_short!("deployed").into_val(&env)),
+            as_xdr(creator.into_val(&env)),
+        ];
+        let expected_data = as_xdr((wasm_hash, salt, deployed).into_val(&env));
         let events = env.events().all();
-        let mut found = false;
-        for event in events.events().iter() {
+        assert!(events.events().iter().any(|event| {
             let soroban_sdk::xdr::ContractEventBody::V0(body) = &event.body;
             let mut topics = Vec::new(&env);
             let topics_ref: &[soroban_sdk::xdr::ScVal] = body.topics.as_ref();

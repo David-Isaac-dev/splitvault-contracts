@@ -14,6 +14,7 @@ Full reference for all public entry points in the SplitVault Soroban contract (`
 - [Groups & Treasury](#groups--treasury)
 - [Channels](#channels)
 - [Disputes](#disputes)
+- [Auctions](#auctions)
 - [Templates & Cloning](#templates--cloning)
 - [Subscriptions](#subscriptions)
 - [Confidential Payments](#confidential-payments)
@@ -589,13 +590,21 @@ pub fn set_reminder(env: Env, who: Address, invoice_id: u64, remind_at: u64)
 
 Schedules a reminder event for `who` at `remind_at` timestamp.
 
+### `cancel_reminder`
+
+```rust
+pub fn cancel_reminder(env: Env, who: Address, invoice_id: u64)
+```
+
+Cancels a reminder previously scheduled by `who` for `invoice_id`. Requires `who` auth. Cancellation is scoped to the caller: only the owner's own reminder is removed, so other accounts' reminders for the same invoice remain scheduled and can still fire. A cancelled reminder cannot be triggered — `trigger_reminder` is a no-op (no event) for a cancelled reminder. Emits `reminder_cancelled`.
+
 ### `trigger_reminder`
 
 ```rust
 pub fn trigger_reminder(env: Env, invoice_id: u64, who: Address)
 ```
 
-Fires the reminder event if `remind_at` has passed. Emits `payment_reminder`.
+Fires the reminder event if `remind_at` has passed. Emits `payment_reminder`. Does nothing if the reminder was cancelled via `cancel_reminder`.
 
 ---
 
@@ -875,6 +884,52 @@ Returns the creator's total lifetime invoice volume (used for fee tier qualifica
 
 ---
 
+### Dashboard creator aggregates
+
+`get_creator_dashboard(creator)` returns lifecycle counts and raw amount sums for
+the creator across registered Split contracts. The counts are unitless and track
+recorded creation, release, and refund events. Each volume adds an integer in
+the unit supplied by Split for that lifecycle event. For a standard
+single-token invoice, these are the token's smallest units. When
+`pay_with_token` swaps an alternative payment asset, the payment is credited
+in the invoice's funding token. Use the credited or settled amount for that
+asset, with its decimals, when presenting the lifecycle.
+
+For example, suppose a creator creates a 10 USDC invoice and a 2 XLM invoice,
+both with seven decimal places. A payer settles the USDC invoice using an
+alternative token that swaps into 10 USDC. Another payer funds 1 XLM of the
+XLM invoice and receives a full refund of that payment.
+
+| Dashboard field | Value | Client presentation |
+|---|---:|---|
+| `invoice_count` | 2 | 2 invoices created |
+| `released_count` | 1 | 1 release |
+| `refunded_count` | 1 | 1 refund |
+| `total_volume` | 120,000,000 | Created volume of 10 USDC and 2 XLM |
+| `released_volume` | 100,000,000 | 10 USDC released |
+| `refunded_volume` | 10,000,000 | 1 XLM refunded |
+
+The raw sum `120,000,000` has no common monetary unit. For mixed assets, use
+invoice and lifecycle data to group amounts by token contract address and scale
+each subtotal using that token's decimals. For invoices that settle in multiple
+recipient assets, use the individual settlement amounts and their token
+addresses to display payouts. The dashboard response alone cannot reconstruct
+those asset subtotals. Clients can always display counts independently.
+
+Split passes its contract address to each ingestion method, and the dashboard
+requires both registration and authorization from that address. Upgrade the
+Split caller and dashboard interface together. A configured Split whose
+dashboard rejects ingestion will fail the enclosing lifecycle call atomically.
+The dashboard admin can use `revoke_split_contract(address)` to remove a single
+registration.
+
+Reads and writes refresh an existing creator aggregate when its remaining
+lifetime falls below half of the refresh target. The target is 240,000 ledgers
+or the network maximum if lower. A lookup must be submitted on-chain for its
+TTL update to persist. An absent creator returns zeroed metrics
+without creating a storage entry. Archived persistent entries follow the
+network's restoration process.
+
 ## Read Functions
 
 ### `get_invoice`
@@ -900,6 +955,28 @@ pub fn get_invoice_ext3(env: Env, invoice_id: u64) -> InvoiceExt3
 ```
 
 Returns Wave 6 extended fields including `release_delay_ledgers`, `metadata_hash`, `payment_token`, and `target_usd_cents`.
+
+## Auctions
+
+### `place_bid`
+
+```rust
+pub fn place_bid(env: Env, bidder: Address, invoice_id: u64, amount: i128)
+```
+
+Places a bid on an invoice auction. Accepted bids are appended to the invoice's bid list, bounded by the documented auction capacity (`MAX_AUCTION_BIDS`); bids beyond capacity are rejected. Each accepted bid emits exactly one structured bid event identifying the invoice and the bid amount. Rejected bids emit no event.
+
+### `settle_auction`
+
+```rust
+pub fn settle_auction(env: Env, invoice_id: u64)
+```
+
+Settles a completed auction. Settlement iterates the accepted bids once, so its work is bounded by the auction capacity: an auction at `MAX_AUCTION_BIDS` settles within the supported resource budget and accounts for every accepted bid.
+
+---
+
+## Read Functions
 
 ### `get_audit_log`
 

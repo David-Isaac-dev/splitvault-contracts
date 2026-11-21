@@ -1,11 +1,15 @@
+#![no_std]
+
 //! Dashboard contract: aggregates per-creator invoice metrics.
 //!
 //! The split contract calls into this contract to record invoice lifecycle
 //! events. Metrics are stored per creator so the frontend can render a
 //! dashboard without scanning the full invoice history.
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol};
 
+/// Lifecycle counts and raw amount sums for one creator.
+/// Volume fields carry no token denomination and can include multiple assets.
 #[contracttype]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CreatorDashboard {
@@ -15,6 +19,35 @@ pub struct CreatorDashboard {
     pub refunded_count: u64,
     pub released_volume: i128,
     pub refunded_volume: i128,
+}
+
+const AGGREGATE_TTL_LEDGERS: u32 = 240_000;
+
+fn refresh_aggregate_ttl(env: &Env, key: &(Symbol, Address)) {
+    let target = AGGREGATE_TTL_LEDGERS.min(env.storage().max_ttl());
+    env.storage()
+        .persistent()
+        .extend_ttl(key, target / 2, target);
+}
+
+fn require_admin(env: &Env) {
+    DashboardContract::get_admin(env.clone()).require_auth();
+}
+
+fn is_authorized_split_contract(env: &Env, caller: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get(&authorized_contract_key(caller))
+        .unwrap_or(false)
+}
+
+fn require_authorized_split_contract(env: &Env, caller: &Address) {
+    assert!(
+        is_authorized_split_contract(env, caller),
+        "unauthorized split contract"
+    );
+    // Soroban authenticates the registered Split when it invokes the dashboard directly.
+    caller.require_auth();
 }
 
 fn admin_key() -> Symbol {
@@ -29,10 +62,39 @@ fn creator_dashboard_key(creator: &Address) -> (Symbol, Address) {
     (symbol_short!("cr_dash"), creator.clone())
 }
 
+fn is_authorized_split_contract(env: &Env, caller: &Address) -> bool {
+    env.storage()
+        .instance()
+        .get(&authorized_contract_key(caller))
+        .unwrap_or(false)
+}
+
+fn require_authorized_split_contract(env: &Env, caller: &Address) {
+    assert!(
+        is_authorized_split_contract(env, caller),
+        "unauthorized split contract"
+    );
+    caller.require_auth();
+}
+
+fn require_admin(env: &Env) -> Address {
+    let admin: Address = env
+        .storage()
+        .instance()
+        .get(&admin_key())
+        .expect("not initialized");
+    admin.require_auth();
+    admin
+}
+
 /// Publish a structured event when a creator's created-invoice metrics update.
 fn dashboard_record_created(env: &Env, creator: &Address, invoice_count: u64, total_volume: i128) {
     env.events().publish(
-        (symbol_short!("dash"), symbol_short!("created"), creator.clone()),
+        (
+            symbol_short!("dash"),
+            symbol_short!("created"),
+            creator.clone(),
+        ),
         (invoice_count, total_volume),
     );
 }
@@ -45,7 +107,11 @@ fn dashboard_record_released(
     released_volume: i128,
 ) {
     env.events().publish(
-        (symbol_short!("dash"), symbol_short!("released"), creator.clone()),
+        (
+            symbol_short!("dash"),
+            symbol_short!("released"),
+            creator.clone(),
+        ),
         (released_count, released_volume),
     );
 }
@@ -53,7 +119,11 @@ fn dashboard_record_released(
 /// Publish a structured event when a creator's refunded-invoice count updates.
 fn dashboard_record_refunded(env: &Env, creator: &Address, refunded_count: u64) {
     env.events().publish(
-        (symbol_short!("dash"), symbol_short!("refunded"), creator.clone()),
+        (
+            symbol_short!("dash"),
+            symbol_short!("refunded"),
+            creator.clone(),
+        ),
         refunded_count,
     );
 }
@@ -89,8 +159,7 @@ impl DashboardContract {
         );
     }
 
-    /// Update the authorized split contract address, e.g. after a protocol
-    /// upgrade replaces the split contract. Requires admin authorization.
+    /// Authorize another Split contract. Requires admin authorization.
     pub fn set_authorized_contract(env: Env, split_contract: Address) {
         require_admin(&env);
 
@@ -100,6 +169,18 @@ impl DashboardContract {
 
         env.events().publish(
             (symbol_short!("dash"), symbol_short!("set_auth")),
+            split_contract,
+        );
+    }
+
+    /// Remove one Split registration. Requires admin authorization.
+    pub fn revoke_split_contract(env: Env, split_contract: Address) {
+        require_admin(&env);
+        env.storage()
+            .instance()
+            .remove(&authorized_contract_key(&split_contract));
+        env.events().publish(
+            (symbol_short!("dash"), symbol_short!("revoke")),
             split_contract,
         );
     }
@@ -127,22 +208,14 @@ impl DashboardContract {
         is_authorized_split_contract(&env, &caller)
     }
 
-    pub fn record_created(env: Env, creator: Address, total: i128) {
-        require_authorized_split_contract(&env, &env.current_contract_address());
+    /// Record a created invoice. A zero amount increments the count without adding volume.
+    pub fn record_created(env: Env, producer: Address, creator: Address, total: i128) {
+        require_authorized_split_contract(&env, &producer);
+        assert!(total >= 0, "negative dashboard amount");
 
         let key = creator_dashboard_key(&creator);
         let mut dashboard: CreatorDashboard =
-            env.storage()
-                .persistent()
-                .get(&key)
-                .unwrap_or(CreatorDashboard {
-                    invoice_count: 0,
-                    total_volume: 0,
-                    released_count: 0,
-                    refunded_count: 0,
-                    released_volume: 0,
-                    refunded_volume: 0,
-                });
+            env.storage().persistent().get(&key).unwrap_or_default();
         dashboard.invoice_count = dashboard
             .invoice_count
             .checked_add(1)
@@ -152,6 +225,7 @@ impl DashboardContract {
             .checked_add(total)
             .expect("total_volume overflow");
         env.storage().persistent().set(&key, &dashboard);
+        refresh_aggregate_ttl(&env, &key);
 
         // Emit event so external analytics pipelines can stream metric updates
         // without polling contract storage (#107).
@@ -163,22 +237,14 @@ impl DashboardContract {
         );
     }
 
-    pub fn record_released(env: Env, creator: Address, total: i128) {
-        require_authorized_split_contract(&env, &env.current_contract_address());
+    /// Record a release. A zero amount increments the count without adding volume.
+    pub fn record_released(env: Env, producer: Address, creator: Address, total: i128) {
+        require_authorized_split_contract(&env, &producer);
+        assert!(total >= 0, "negative dashboard amount");
 
         let key = creator_dashboard_key(&creator);
         let mut dashboard: CreatorDashboard =
-            env.storage()
-                .persistent()
-                .get(&key)
-                .unwrap_or(CreatorDashboard {
-                    invoice_count: 0,
-                    total_volume: 0,
-                    released_count: 0,
-                    refunded_count: 0,
-                    released_volume: 0,
-                    refunded_volume: 0,
-                });
+            env.storage().persistent().get(&key).unwrap_or_default();
         dashboard.released_count = dashboard
             .released_count
             .checked_add(1)
@@ -188,6 +254,7 @@ impl DashboardContract {
             .checked_add(total)
             .expect("released_volume overflow");
         env.storage().persistent().set(&key, &dashboard);
+        refresh_aggregate_ttl(&env, &key);
 
         // Emit event for real-time indexing of creator metrics (#107).
         dashboard_record_released(
@@ -199,31 +266,22 @@ impl DashboardContract {
     }
 
     /// Record a refunded invoice for `creator`.
-    pub fn record_refunded(env: Env, creator: Address) {
+    pub fn record_refunded(env: Env, creator: Address, total: i128) {
         require_authorized_split_contract(&env, &env.current_contract_address());
 
         let key = creator_dashboard_key(&creator);
         let mut dashboard: CreatorDashboard =
-            env.storage()
-                .persistent()
-                .get(&key)
-                .unwrap_or(CreatorDashboard {
-                    invoice_count: 0,
-                    total_volume: 0,
-                    released_count: 0,
-                    refunded_count: 0,
-                    released_volume: 0,
-                    refunded_volume: 0,
-                });
+            env.storage().persistent().get(&key).unwrap_or_default();
         dashboard.refunded_count = dashboard
             .refunded_count
             .checked_add(1)
             .expect("refunded_count overflow");
         dashboard.refunded_volume = dashboard
             .refunded_volume
-            .checked_add(total)
+            .checked_add(amount)
             .expect("refunded_volume overflow");
         env.storage().persistent().set(&key, &dashboard);
+        refresh_aggregate_ttl(&env, &key);
 
         // Emit event for real-time indexing of creator metrics (#107).
         dashboard_record_refunded(&env, &creator, dashboard.refunded_count);
@@ -231,6 +289,27 @@ impl DashboardContract {
 
     /// Read the aggregated dashboard for `creator`.
     pub fn get_creator_dashboard(env: Env, creator: Address) -> CreatorDashboard {
-        Self::load(&env, &creator)
+        env.storage()
+            .persistent()
+            .get(&creator_dashboard_key(&creator))
+            .unwrap_or_default()
+    }
+
+    /// Load the aggregated dashboard for `creator`, defaulting to empty metrics.
+    fn load(env: &Env, creator: &Address) -> CreatorDashboard {
+        env.storage()
+            .persistent()
+            .get(&creator_dashboard_key(creator))
+            .unwrap_or(CreatorDashboard {
+                invoice_count: 0,
+                total_volume: 0,
+                released_count: 0,
+                refunded_count: 0,
+                released_volume: 0,
+                refunded_volume: 0,
+            })
     }
 }
+
+#[cfg(test)]
+mod test;
