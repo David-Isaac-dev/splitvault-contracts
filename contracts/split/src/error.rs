@@ -147,8 +147,27 @@ pub enum ContractError {
     TooFewRecipients = 66,
     /// Issue #29: A stage release was attempted out of order; the preceding stage has not been released yet.
     PriorStageNotReleased = 67,
+    /// The payment channel has passed its expiry ledger.
+    ChannelExpired = 68,
+    /// The oracle price is older than the allowed freshness window.
+    StaleOraclePrice = 69,
+    /// The invoice does not accept this token.
+    TokenNotAccepted = 70,
+    /// The delegated payment allowance has expired.
+    DelegationExpired = 71,
+    /// The requested payment exceeds the delegated allowance.
+    DelegationAllowanceExceeded = 72,
     /// Issue #88: `require_schema_current` detected a stale schema version.
     /// Structured variant so RPC callers can inspect the error code and prompt
     /// a migration workflow instead of seeing a generic WASM trap.
     SchemaMigrationRequired = 101,
+    /// Issue #143: a clone has unpaired overrides or mismatched split vector lengths.
+    LengthMismatch = 102,
+    /// Issue #240: `trigger_reminder` was called for an account that has no
+    /// scheduled reminder (never set, already triggered, or cancelled).
+    ReminderNotSet = 103,
+    /// Issue #241: `place_bid` would exceed the documented per-auction bid capacity.
+    AuctionBidLimitExceeded = 104,
+    /// Issue #247: `estimate_compute` received a count input above the supported bound.
+    EstimateCountOutOfBounds = 105,
 }

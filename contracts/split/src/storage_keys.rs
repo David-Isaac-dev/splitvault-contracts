@@ -31,7 +31,9 @@
 //! Use [`migrate_persistent`] / [`migrate_instance`] when renaming a key
 //! between contract versions.
 
-use soroban_sdk::{contracttype, symbol_short, Address, BytesN, Env, IntoVal, Symbol, TryFromVal, Val};
+use soroban_sdk::{
+    contracttype, symbol_short, Address, BytesN, Env, IntoVal, Symbol, TryFromVal, Val,
+};
 
 // ---------------------------------------------------------------------------
 // Enum 1 — Instance-tier singletons
@@ -282,6 +284,10 @@ pub enum CompoundKey {
     /// Issue #41: per-payer tip total for an invoice.  Only written when tip > 0
     /// to avoid unnecessary ledger entries and persistent-storage rent charges.
     TipTotal(u64, Address),
+    /// Issue #240: per-owner scheduled reminder timestamp.  Keyed by
+    /// `(invoice_id, owner)` so a reminder owner can cancel exactly their own
+    /// entry without disturbing any other account's schedule.
+    ReminderOwner(u64, Address),
 }
 
 // ---------------------------------------------------------------------------
@@ -350,27 +356,51 @@ mod tests {
     fn instance_keys_are_unique() {
         let env = Env::default();
         let keys: &[StorageKey] = &[
-            StorageKey::Admin, StorageKey::Admins, StorageKey::Paused,
-            StorageKey::PausedFns, StorageKey::Treasury, StorageKey::UsdcToken,
-            StorageKey::CreationFee, StorageKey::PlatformFeeBps,
-            StorageKey::PlatformFeeWaiverList, StorageKey::CreatorFeeWaiver,
-            StorageKey::Counter, StorageKey::GlobalPayerLimit,
-            StorageKey::GlobalPayerWindow, StorageKey::StreamContract,
-            StorageKey::CreatorWhitelist, StorageKey::Compliance,
-            StorageKey::KycContract, StorageKey::RateLimit, StorageKey::RateWindow,
-            StorageKey::MaxCancelBps, StorageKey::ReceiptFactory,
-            StorageKey::DashboardContract, StorageKey::NftGate,
-            StorageKey::TimelockSecs, StorageKey::TimelockActionCounter,
-            StorageKey::FeeTiers, StorageKey::PendingAdmin,
-            StorageKey::GovernanceContract, StorageKey::Factories,
-            StorageKey::DexContract, StorageKey::TotalInvoices,
-            StorageKey::TotalVolume, StorageKey::TotalReleased,
-            StorageKey::TotalRefunded, StorageKey::TreasuryGroupCounter,
-            StorageKey::ContractVersion, StorageKey::ArchiveAfterLedgers,
-            StorageKey::CircuitBreaker, StorageKey::CircuitBreakerReason,
-            StorageKey::PlatformVolThresh, StorageKey::PlatformVolMile,
-            StorageKey::CreatorVolThresh, StorageKey::UpgradeProposal,
-            StorageKey::ProtocolFee, StorageKey::ReentrancyGuard,
+            StorageKey::Admin,
+            StorageKey::Admins,
+            StorageKey::Paused,
+            StorageKey::PausedFns,
+            StorageKey::Treasury,
+            StorageKey::UsdcToken,
+            StorageKey::CreationFee,
+            StorageKey::PlatformFeeBps,
+            StorageKey::PlatformFeeWaiverList,
+            StorageKey::CreatorFeeWaiver,
+            StorageKey::Counter,
+            StorageKey::GlobalPayerLimit,
+            StorageKey::GlobalPayerWindow,
+            StorageKey::StreamContract,
+            StorageKey::CreatorWhitelist,
+            StorageKey::Compliance,
+            StorageKey::KycContract,
+            StorageKey::RateLimit,
+            StorageKey::RateWindow,
+            StorageKey::MaxCancelBps,
+            StorageKey::ReceiptFactory,
+            StorageKey::DashboardContract,
+            StorageKey::NftGate,
+            StorageKey::TimelockSecs,
+            StorageKey::TimelockActionCounter,
+            StorageKey::FeeTiers,
+            StorageKey::PendingAdmin,
+            StorageKey::GovernanceContract,
+            StorageKey::Factories,
+            StorageKey::DexContract,
+            StorageKey::TotalInvoices,
+            StorageKey::TotalVolume,
+            StorageKey::TotalReleased,
+            StorageKey::TotalRefunded,
+            StorageKey::TreasuryGroupCounter,
+            StorageKey::ContractVersion,
+            StorageKey::ArchiveAfterLedgers,
+            StorageKey::CircuitBreaker,
+            StorageKey::CircuitBreakerReason,
+            StorageKey::PlatformVolThresh,
+            StorageKey::PlatformVolMile,
+            StorageKey::CreatorVolThresh,
+            StorageKey::UpgradeProposal,
+            StorageKey::ProtocolFee,
+            StorageKey::ReentrancyGuard,
             StorageKey::MinRecipients,
         ];
         for i in 0..keys.len() {
@@ -389,13 +419,20 @@ mod tests {
         let env = Env::default();
         let id = 42u64;
         let keys: &[InvoiceKey] = &[
-            InvoiceKey::Invoice(id), InvoiceKey::InvoiceExt(id),
-            InvoiceKey::InvoiceExt2(id), InvoiceKey::InvoiceCompact(id),
-            InvoiceKey::InvoiceHot(id), InvoiceKey::AuditLog(id),
-            InvoiceKey::ReleaseDelay(id), InvoiceKey::CompactStatus(id),
-            InvoiceKey::RecipientsList(id), InvoiceKey::AmountsList(id),
-            InvoiceKey::PaidFlags(id), InvoiceKey::MilestoneFlags(id),
-            InvoiceKey::ArchiveMarker(id), InvoiceKey::CreatedLedger(id),
+            InvoiceKey::Invoice(id),
+            InvoiceKey::InvoiceExt(id),
+            InvoiceKey::InvoiceExt2(id),
+            InvoiceKey::InvoiceCompact(id),
+            InvoiceKey::InvoiceHot(id),
+            InvoiceKey::AuditLog(id),
+            InvoiceKey::ReleaseDelay(id),
+            InvoiceKey::CompactStatus(id),
+            InvoiceKey::RecipientsList(id),
+            InvoiceKey::AmountsList(id),
+            InvoiceKey::PaidFlags(id),
+            InvoiceKey::MilestoneFlags(id),
+            InvoiceKey::ArchiveMarker(id),
+            InvoiceKey::CreatedLedger(id),
             InvoiceKey::EvSeq(id),
         ];
         for i in 0..keys.len() {
@@ -472,6 +509,7 @@ mod tests {
             CompoundKey::PayerCooldown(id, addr.clone()),
             CompoundKey::MemoDedupe(dummy_hash),
             CompoundKey::TipTotal(id, addr.clone()),
+            CompoundKey::ReminderOwner(id, addr.clone()),
         ];
         for i in 0..keys.len() {
             for j in (i + 1)..keys.len() {
@@ -536,3 +574,15 @@ pub fn ev_seq_key(invoice_id: u64) -> InvoiceKey {
     InvoiceKey::EvSeq(invoice_id)
 }
 
+// ---------------------------------------------------------------------------
+// Issue #240: Owner-scoped reminder cancellation
+// ---------------------------------------------------------------------------
+
+/// Per-owner scheduled reminder — persistent storage.
+///
+/// Returns the [`CompoundKey::ReminderOwner`] variant for
+/// `(invoice_id, owner)`, so cancelling one owner's reminder removes only
+/// that entry and leaves every other account's schedule intact.
+pub fn reminder_owner_key(invoice_id: u64, owner: Address) -> CompoundKey {
+    CompoundKey::ReminderOwner(invoice_id, owner)
+}

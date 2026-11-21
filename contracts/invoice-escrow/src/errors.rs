@@ -54,4 +54,10 @@ pub enum Error {
     VelocityLimitExceeded = 22,
     /// Aggregate per-invoice sliding-window intake velocity cap would be exceeded.
     InvoiceVelocityLimitExceeded = 23,
+    /// Recovery policy: an upheld (finalised) blacklist entry may be retired by
+    /// the admin to restore the payer's eligibility. Retirement is only valid
+    /// for entries that were finalised and upheld; the original outcome is
+    /// preserved in history. This error is returned when the entry is not in
+    /// that upheld state.
+    BlacklistNotUpheld = 24,
 }
