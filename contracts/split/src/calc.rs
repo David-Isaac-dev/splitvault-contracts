@@ -50,7 +50,15 @@ use crate::error::ContractError;
 /// # Guarantees
 /// * `result.iter().sum::<i128>() == total` always
 /// * recipients with larger fractional remainders receive an extra stroop
+/// * ties in the remainder are broken by **input order**: when two recipients
+///   have equal remainders, the one appearing earlier in `ratios` is served
+///   first, so leftover stroops are assigned deterministically
 /// * pure function: no side effects, no storage access
+///
+/// # Errors
+/// * [`ContractError::InvalidAmount`] if `ratios` is empty, `denom <= 0`, or
+///   there are more than 64 recipients (checked before any per-weight
+///   arithmetic or scratch allocation)
 ///
 /// # Panics
 /// * if `ratios` is empty
@@ -73,7 +81,13 @@ pub fn distribute_with_remainder(
         return Err(ContractError::InvalidAmount);
     }
 
+    // Reject unsupported recipient counts up front, before any per-weight
+    // arithmetic or scratch allocation. (#244)
+    const MAX_RECIPIENTS: usize = 64;
     let n = ratios.len() as usize;
+    if n > MAX_RECIPIENTS {
+        return Err(ContractError::InvalidAmount);
+    }
 
     // Compute floor shares and remainders.
     let mut shares = Vec::new(env);
@@ -105,13 +119,7 @@ pub fn distribute_with_remainder(
 
     // Build an index array sorted by remainder descending.
     // We use a fixed-size array (max 64 recipients) for no_std compatibility.
-    // Contracts with more than 64 recipients would need a larger cap, but
-    // 64 is a reasonable upper bound for on-chain use.
-    const MAX_RECIPIENTS: usize = 64;
-    if n > MAX_RECIPIENTS {
-        return Err(ContractError::InvalidAmount);
-    }
-
+    // The recipient count was already validated against MAX_RECIPIENTS above.
     let mut indices = [0usize; MAX_RECIPIENTS];
     for i in 0..n {
         indices[i] = i;
@@ -557,6 +565,34 @@ mod tests {
         let result = distribute_with_remainder(&env, total, &ratios, 1);
         // total * 3 overflows u128; must return ArithmeticOverflow.
         assert_eq!(result, Err(crate::error::ContractError::ArithmeticOverflow));
+    }
+
+    /// Exactly 64 valid weights are accepted and conserve the total. (#244)
+    #[test]
+    fn test_distribute_accepts_max_recipients() {
+        let env = Env::default();
+        let mut weights = [0i128; 64];
+        for w in weights.iter_mut() {
+            *w = 1;
+        }
+        let total = 1_000_003i128;
+        let shares = assert_exact(&env, total, &weights, 64);
+        assert_eq!(shares.len(), 64);
+        let sum: i128 = shares.iter().sum();
+        assert_eq!(sum, total);
+    }
+
+    /// 65 weights are rejected before any per-weight arithmetic. (#244)
+    #[test]
+    fn test_distribute_rejects_too_many_recipients() {
+        let env = Env::default();
+        let mut weights = [0i128; 65];
+        for w in weights.iter_mut() {
+            *w = 1;
+        }
+        let ratios = make_ratios(&env, &weights);
+        let result = distribute_with_remainder(&env, 1_000, &ratios, 65);
+        assert_eq!(result, Err(crate::error::ContractError::InvalidAmount));
     }
 
     /// leftover must never exceed n (the recipient count). If it somehow would,
