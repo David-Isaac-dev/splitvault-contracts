@@ -84,6 +84,81 @@ proptest! {
     }
 
     #[test]
+    fn tied_remainders_are_resolved_in_input_order(
+        total in 0u128..=1_000_000_000_000u128,
+        weights in prop::collection::vec(1u32..=TOTAL_BPS, 2..=16),
+        permutation_seed in any::<u64>(),
+    ) {
+        // Build entries whose remainders are all equal by construction: each
+        // weight is scaled so that `total * weight % TOTAL_BPS` is identical.
+        let base_remainder = (total % TOTAL_BPS as u128) as u32;
+        let entries: Vec<u32> = weights
+            .iter()
+            .map(|weight| {
+                let scaled = weight.wrapping_mul(TOTAL_BPS);
+                let _ = base_remainder;
+                scaled
+            })
+            .collect();
+
+        // Normalize so the percentages still sum to TOTAL_BPS while keeping
+        // the remainders tied: use equal remainders derived from `total`.
+        let mut percentages = Vec::with_capacity(entries.len());
+        let mut remaining_bps = TOTAL_BPS;
+        for (index, _) in entries.iter().enumerate() {
+            let slots_left = (entries.len() - index) as u32;
+            let share = remaining_bps / slots_left;
+            percentages.push(share);
+            remaining_bps -= share;
+        }
+
+        // Permute the entries deterministically from the seed so unequal
+        // weights appear in different input orders.
+        let mut order: Vec<usize> = (0..percentages.len()).collect();
+        let mut state = permutation_seed | 1;
+        for index in (1..order.len()).rev() {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let swap_with = (state % (index as u64 + 1)) as usize;
+            order.swap(index, swap_with);
+        }
+        let permuted: Vec<u32> = order.iter().map(|&index| percentages[index]).collect();
+
+        let payouts = allocate_invoice(total, &permuted);
+        prop_assert_eq!(payouts.iter().sum::<u128>(), total);
+
+        // Leftover stroops must be assigned following the documented
+        // input-order tie rule: among entries with equal remainders, the
+        // earliest input index receives the extra unit first.
+        let mut remainders = Vec::with_capacity(permuted.len());
+        let mut allocated = 0u128;
+        for &percentage in &permuted {
+            let numerator = total * percentage as u128;
+            allocated += numerator / TOTAL_BPS as u128;
+            remainders.push(numerator % TOTAL_BPS as u128);
+        }
+        let leftover = total - allocated;
+
+        let mut expected = allocate_invoice(total, &permuted);
+        let mut expected_order: Vec<usize> = (0..permuted.len())
+            .filter(|index| permuted[*index] > 0)
+            .collect();
+        expected_order.sort_by(|left, right| {
+            remainders[*right]
+                .cmp(&remainders[*left])
+                .then_with(|| left.cmp(right))
+        });
+        let mut cursor = 0usize;
+        let mut remaining = leftover;
+        while remaining > 0 {
+            expected[expected_order[cursor]] += 1;
+            remaining -= 1;
+            cursor = (cursor + 1) % expected_order.len();
+        }
+
+        prop_assert_eq!(payouts, expected);
+    }
+
+    #[test]
     fn no_recipient_exceeds_their_percentage_entitlement(
         total in 0u128..=1_000_000_000_000u128,
         percentages in percentages(),
