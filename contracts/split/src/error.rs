@@ -1,8 +1,7 @@
 use soroban_sdk::contracterror;
 
-/// Unified error taxonomy (issue #273). Discriminants are stable — never reorder, only append.
 #[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum ContractError {
     /// Caller is not authorized for this operation (missing admin/role/signer or wrong identity).
