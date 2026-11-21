@@ -284,6 +284,10 @@ pub enum CompoundKey {
     /// Issue #41: per-payer tip total for an invoice.  Only written when tip > 0
     /// to avoid unnecessary ledger entries and persistent-storage rent charges.
     TipTotal(u64, Address),
+    /// Issue #240: per-owner scheduled reminder timestamp.  Keyed by
+    /// `(invoice_id, owner)` so a reminder owner can cancel exactly their own
+    /// entry without disturbing any other account's schedule.
+    ReminderOwner(u64, Address),
 }
 
 // ---------------------------------------------------------------------------
@@ -505,6 +509,7 @@ mod tests {
             CompoundKey::PayerCooldown(id, addr.clone()),
             CompoundKey::MemoDedupe(dummy_hash),
             CompoundKey::TipTotal(id, addr.clone()),
+            CompoundKey::ReminderOwner(id, addr.clone()),
         ];
         for i in 0..keys.len() {
             for j in (i + 1)..keys.len() {
@@ -567,4 +572,17 @@ pub fn tombstone_key(invoice_id: u64) -> (Symbol, u64) {
 /// old inline `(symbol_short!("ev_seq"), invoice_id)` tuple.
 pub fn ev_seq_key(invoice_id: u64) -> InvoiceKey {
     InvoiceKey::EvSeq(invoice_id)
+}
+
+// ---------------------------------------------------------------------------
+// Issue #240: Owner-scoped reminder cancellation
+// ---------------------------------------------------------------------------
+
+/// Per-owner scheduled reminder — persistent storage.
+///
+/// Returns the [`CompoundKey::ReminderOwner`] variant for
+/// `(invoice_id, owner)`, so cancelling one owner's reminder removes only
+/// that entry and leaves every other account's schedule intact.
+pub fn reminder_owner_key(invoice_id: u64, owner: Address) -> CompoundKey {
+    CompoundKey::ReminderOwner(invoice_id, owner)
 }

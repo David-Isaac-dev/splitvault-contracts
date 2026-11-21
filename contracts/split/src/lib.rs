@@ -55,6 +55,13 @@ const ORACLE_RATE_SCALE: i128 = 1_000_000;
 const DEFAULT_INVOICE_STORAGE_QUOTA: u64 = 65_536;
 const DEFAULT_MAX_OPEN_INVOICES: u32 = 100;
 
+/// Issue #238: maximum number of invoice tags accepted by `set_invoice_tags`.
+pub const MAX_INVOICE_TAGS: u32 = 16;
+/// Issue #238: maximum serialized byte size of a single invoice tag.
+pub const MAX_INVOICE_TAG_BYTES: u32 = 128;
+/// Issue #238: maximum total serialized byte size of the whole tag payload.
+pub const MAX_INVOICE_TAGS_TOTAL_BYTES: u32 = 1_024;
+
 mod calc;
 mod constants;
 mod error;
@@ -72,6 +79,9 @@ mod fuzz_tests;
 
 #[cfg(test)]
 mod storage_snapshot;
+
+#[cfg(test)]
+mod estimate_compute_tests;
 
 mod storage;
 mod storage_keys;
@@ -100,7 +110,8 @@ use types::{
     InvoiceOptions2, InvoicePayment, InvoiceStats, InvoiceStatus, InvoiceTemplate,
     InvoiceTemplateRecord, LegacyInvoice, OverflowBehavior, OverfundingPolicy, Payment,
     PaymentCertificate, PaymentCommitment, PaymentProof, PaymentRecord, PendingAdminAction,
-    ProtocolFeeConfig, QueuedAction, RebateTier, Recipient, RepScore, ResolveAction, ResolveRule,
+    ProtocolFeeConfig, QueuedAction, QueuedActionStatus, RebateTier, Recipient, RepScore,
+    ResolveAction, ResolveRule,
     Role, SimulateReleaseResult, SplitRule, SubscriptionParams, TimelockAction, Tombstone, Tranche,
     TransferRecord, TreasuryRecord, UpgradeProposal,
 };
@@ -1546,6 +1557,34 @@ fn update_creator_payers(env: &Env, creator: &Address, payer: &Address) {
 /// Issue #438: anonymity mode flag for an invoice — persistent storage.
 fn anonymous_recipients_key(invoice_id: u64) -> (Symbol, u64) {
     (symbol_short!("anon_rec"), invoice_id)
+}
+
+/// Issue #238: invoice tags — persistent storage (invoice_id).
+fn invoice_tags_key(invoice_id: u64) -> (Symbol, u64) {
+    (symbol_short!("inv_tags"), invoice_id)
+}
+
+/// Issue #238: validate a complete tag payload before it is persisted.
+///
+/// Enforces the published limits ([`MAX_INVOICE_TAGS`],
+/// [`MAX_INVOICE_TAG_BYTES`], [`MAX_INVOICE_TAGS_TOTAL_BYTES`]) over the whole
+/// vector so an oversized replacement is rejected before any storage write.
+fn validate_invoice_tags(tags: &Vec<String>) -> Result<(), ContractError> {
+    if tags.len() > MAX_INVOICE_TAGS {
+        return Err(ContractError::TooManyTags);
+    }
+    let mut total: u32 = 0;
+    for tag in tags.iter() {
+        let len = tag.len();
+        if len > MAX_INVOICE_TAG_BYTES {
+            return Err(ContractError::TagTooLong);
+        }
+        total = total.saturating_add(len);
+    }
+    if total > MAX_INVOICE_TAGS_TOTAL_BYTES {
+        return Err(ContractError::TagsPayloadTooLarge);
+    }
+    Ok(())
 }
 
 /// Issue #438: recipient commitment hash — persistent storage (invoice_id, index).
@@ -5226,6 +5265,33 @@ impl SplitContract {
             &env.current_contract_address(),
         );
         events::action_executed(&env, action_id, &queued.action);
+    }
+
+    /// Look up the status of a queued timelock action by its `action_id`.
+    ///
+    /// Returns `Some(QueuedActionStatus::Pending)` while the action is queued
+    /// and has not yet been executed, and `Some(QueuedActionStatus::Executed)`
+    /// once it has been executed — executed records are retained in storage so
+    /// clients can still reconcile after the fact.
+    ///
+    /// Returns `None` when no record exists for `action_id`. Note that
+    /// [`Self::cancel_action`] **removes** the action record from storage, so a
+    /// cancelled action ID is indistinguishable from one that was never queued
+    /// and also returns `None`. Clients that need to tell cancellation apart
+    /// from "never existed" should watch the `action_cancelled` event.
+    pub fn get_queued_action(env: Env, action_id: u64) -> Option<QueuedActionStatus> {
+        let queued: Option<QueuedAction> = env
+            .storage()
+            .persistent()
+            .get(&timelock_action_key(action_id));
+
+        queued.map(|q| {
+            if q.executed {
+                QueuedActionStatus::Executed
+            } else {
+                QueuedActionStatus::Pending
+            }
+        })
     }
 
     /// Cancel a queued timelock action before it executes. Requires admin auth.
@@ -16769,6 +16835,57 @@ impl SplitContract {
         }
     }
 
+    /// Issue #238: replace the invoice's tag list.
+    ///
+    /// The complete payload is validated against the published limits
+    /// ([`MAX_INVOICE_TAGS`], [`MAX_INVOICE_TAG_BYTES`],
+    /// [`MAX_INVOICE_TAGS_TOTAL_BYTES`]) before anything is written, so a
+    /// rejected replacement leaves the previously stored tags intact.
+    pub fn set_invoice_tags(
+        env: Env,
+        creator: Address,
+        invoice_id: u64,
+        tags: Vec<String>,
+    ) -> Result<(), ContractError> {
+        creator.require_auth();
+
+        let invoice = load_invoice(&env, invoice_id);
+        if invoice.creator != creator {
+            return Err(ContractError::Unauthorized);
+        }
+
+        validate_invoice_tags(&tags)?;
+
+        env.storage()
+            .persistent()
+            .set(&invoice_tags_key(invoice_id), &tags);
+        env.storage().persistent().extend_ttl(
+            &invoice_tags_key(invoice_id),
+            INVOICE_HOT_TTL_LEDGERS / 2,
+            INVOICE_HOT_TTL_LEDGERS,
+        );
+
+        Ok(())
+    }
+
+    /// Issue #238: read the invoice's stored tag list (empty if never set).
+    pub fn get_invoice_tags(env: Env, invoice_id: u64) -> Vec<String> {
+        env.storage()
+            .persistent()
+            .get(&invoice_tags_key(invoice_id))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// Issue #238: publish the tag payload limits as
+    /// `(max_tags, max_tag_bytes, max_total_bytes)`.
+    pub fn get_invoice_tag_limits(_env: Env) -> (u32, u32, u32) {
+        (
+            MAX_INVOICE_TAGS,
+            MAX_INVOICE_TAG_BYTES,
+            MAX_INVOICE_TAGS_TOTAL_BYTES,
+        )
+    }
+
     /// Get the creator address for an invoice.
     pub fn get_invoice_creator(env: Env, invoice_id: u64) -> Address {
         let invoice = load_invoice(&env, invoice_id);
@@ -16797,6 +16914,270 @@ impl SplitContract {
         } else {
             ((invoice.funded * 10_000) / total) as u32
         }
+    }
+
+    /// Issue #246: Get the number of distinct payers for an invoice.
+    ///
+    /// This is the authoritative payer count used by `estimate_compute` for the
+    /// `refund` operation when only an invoice ID is supplied.
+    pub fn get_invoice_payer_count(env: Env, invoice_id: u64) -> u32 {
+        // Ensure the invoice exists (panics otherwise).
+        let _invoice = load_invoice(&env, invoice_id);
+        count_distinct_payers(&env, invoice_id)
+    }
+
+    /// Issue #246: Estimate the compute cost of an operation.
+    ///
+    /// When `invoice_id` is supplied, the estimate is derived from the actual
+    /// invoice state. In particular the `refund` operation uses the number of
+    /// distinct payers recorded for the invoice (aggregated across payment
+    /// shards) rather than assuming a single payer, so the estimate matches the
+    /// explicit `payer_count` path for equivalent inputs.
+    pub fn estimate_compute(
+        env: Env,
+        operation: Symbol,
+        invoice_id: Option<u64>,
+        recipient_count: Option<u32>,
+        payer_count: Option<u32>,
+    ) -> ComputeEstimate {
+        let mut recipients: u32 = recipient_count.unwrap_or(0);
+        let mut payers: u32 = payer_count.unwrap_or(0);
+
+        if let Some(id) = invoice_id {
+            let invoice = load_invoice(&env, id);
+            if recipient_count.is_none() {
+                recipients = invoice.recipients.len();
+            }
+            if payer_count.is_none() {
+                // Issue #246: derive the payer count from actual payer records
+                // instead of assuming a single payer.
+                payers = count_distinct_payers(&env, id);
+            }
+        }
+
+        // Issue #298: instruction cost model.
+        let instructions: u64 = if operation == symbol_short!("refund") {
+            INSTRUCTIONS_BASE
+                .saturating_add(INSTRUCTIONS_PER_RECIPIENT.saturating_mul(payers as u64))
+        } else {
+            INSTRUCTIONS_BASE
+                .saturating_add(INSTRUCTIONS_PER_RECIPIENT.saturating_mul(recipients as u64))
+                .saturating_add(INSTRUCTIONS_PER_SHARD.saturating_mul(SHARD_COUNT))
+        };
+
+        let fee_stroops = instructions
+            .saturating_mul(STROOPS_PER_10K_INSTRUCTIONS)
+            / 10_000;
+
+        ComputeEstimate {
+            operation,
+            recipient_count: recipients,
+            payer_count: payers,
+            estimated_instructions: instructions,
+            estimated_fee_stroops: fee_stroops,
+            within_budget: instructions <= INSTRUCTION_BUDGET_LIMIT,
+        }
+    }
+
+    /// Issue #246: Estimate refund compute from the invoice's actual payer records.
+    ///
+    /// Convenience wrapper around `estimate_compute` for the `refund` operation
+    /// that always derives the payer count from stored payment records.
+    pub fn estimate_refund_compute(env: Env, invoice_id: u64) -> ComputeEstimate {
+        Self::estimate_compute(
+            env,
+            symbol_short!("refund"),
+            Some(invoice_id),
+            None,
+            None,
+        )
+    }
+}
+
+/// Issue #246: Count the distinct payers recorded against an invoice.
+///
+/// Refund work scales with the number of distinct payers, not with the number
+/// of payment records (a payer may contribute several times). Payments are
+/// aggregated across all payment shards, matching the aggregation performed by
+/// `refund()` itself, so the estimate reflects the actual refund workload.
+#[allow(dead_code)]
+fn count_distinct_payers(env: &Env, invoice_id: u64) -> u32 {
+    let mut payers: Vec<Address> = Vec::new(env);
+    for shard_id in 0..SHARD_COUNT {
+        if let Some(shard_payments) = env
+            .storage()
+            .persistent()
+            .get::<(Symbol, u64, u64), Vec<Payment>>(&pay_shard_key(invoice_id, shard_id))
+        {
+            for payment in shard_payments.iter() {
+                if !payers.iter().any(|p| p == payment.payer) {
+                    payers.push_back(payment.payer.clone());
+                }
+            }
+        }
+    }
+    payers.len()
+}
+
+#[cfg(test)]
+mod invoice_tags_tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+
+    fn setup(env: &Env) -> (SplitVaultClient<'_>, Address, u64) {
+        env.mock_all_auths();
+        let contract_id = env.register(SplitVault, ());
+        let client = SplitVaultClient::new(env, &contract_id);
+        let creator = Address::generate(env);
+        let token = Address::generate(env);
+        let mut recipients = Vec::new(env);
+        recipients.push_back(Address::generate(env));
+        let mut amounts = Vec::new(env);
+        amounts.push_back(1_000i128);
+        let id = client.create_invoice(
+            &creator,
+            &recipients,
+            &amounts,
+            &Vec::new(env),
+            &token,
+            &(env.ledger().timestamp() + 10_000),
+            &Vec::new(env),
+            &false,
+            &0i128,
+            &0u32,
+            &None,
+            &Vec::new(env),
+            &Vec::new(env),
+            &0u32,
+            &0u32,
+            &0u64,
+            &0u32,
+            &Vec::new(env),
+            &None,
+            &Vec::new(env),
+            &None,
+            &0u32,
+            &None,
+            &0u32,
+            &false,
+            &None,
+            &OverflowBehavior::Reject,
+            &false,
+            &Vec::new(env),
+            &None,
+            &None,
+            &None,
+            &0i128,
+            &0u64,
+            &Vec::new(env),
+            &Vec::new(env),
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &Vec::new(env),
+            &false,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &None,
+            &false,
+            &None,
+            &0u32,
+            &0u32,
+            &0u32,
+            &Vec::new(env),
+            &10_000u64,
+        );
+        (client, creator, id)
+    }
+
+    #[test]
+    fn max_supported_tags_round_trip() {
+        let env = Env::default();
+        let (client, creator, id) = setup(&env);
+
+        let mut tags = Vec::new(&env);
+        for i in 0..MAX_INVOICE_TAGS {
+            // Build a tag of exactly the per-tag maximum length.
+            let mut s = String::from_str(&env, "");
+            for _ in 0..MAX_INVOICE_TAG_BYTES {
+                s = s.concat(&String::from_str(&env, "a"));
+            }
+            let _ = i;
+            tags.push_back(s);
+        }
+        // Shrink to stay within the total payload budget while keeping the
+        // maximum supported count.
+        let per_tag = MAX_INVOICE_TAGS_TOTAL_BYTES / MAX_INVOICE_TAGS;
+        let mut bounded = Vec::new(&env);
+        for _ in 0..MAX_INVOICE_TAGS {
+            let mut s = String::from_str(&env, "");
+            for _ in 0..per_tag {
+                s = s.concat(&String::from_str(&env, "a"));
+            }
+            bounded.push_back(s);
+        }
+
+        client.set_invoice_tags(&creator, &id, &bounded);
+        let stored = client.get_invoice_tags(&id);
+        assert_eq!(stored.len(), MAX_INVOICE_TAGS);
+        assert_eq!(stored, bounded);
+    }
+
+    #[test]
+    fn oversized_replacement_keeps_previous_tags() {
+        let env = Env::default();
+        let (client, creator, id) = setup(&env);
+
+        let mut original = Vec::new(&env);
+        original.push_back(String::from_str(&env, "keep-me"));
+        client.set_invoice_tags(&creator, &id, &original);
+
+        // Too many tags.
+        let mut too_many = Vec::new(&env);
+        for _ in 0..(MAX_INVOICE_TAGS + 1) {
+            too_many.push_back(String::from_str(&env, "x"));
+        }
+        let res = client.try_set_invoice_tags(&creator, &id, &too_many);
+        assert!(res.is_err());
+
+        // Single tag over the per-tag limit.
+        let mut too_long = Vec::new(&env);
+        let mut s = String::from_str(&env, "");
+        for _ in 0..(MAX_INVOICE_TAG_BYTES + 1) {
+            s = s.concat(&String::from_str(&env, "a"));
+        }
+        too_long.push_back(s);
+        let res = client.try_set_invoice_tags(&creator, &id, &too_long);
+        assert!(res.is_err());
+
+        let stored = client.get_invoice_tags(&id);
+        assert_eq!(stored, original);
+    }
+
+    #[test]
+    fn tag_limits_are_published() {
+        let env = Env::default();
+        let (client, _, _) = setup(&env);
+        let limits = client.get_invoice_tag_limits();
+        assert_eq!(
+            limits,
+            (
+                MAX_INVOICE_TAGS,
+                MAX_INVOICE_TAG_BYTES,
+                MAX_INVOICE_TAGS_TOTAL_BYTES
+            )
+        );
     }
 }
 

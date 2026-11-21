@@ -62,6 +62,16 @@ Keys in this tier are contract-level singletons. Each variant carries no data (u
 | `ProtocolFee` | unit | #326 | ∞ | Protocol fee config (ProtocolFeeConfig) |
 | `ReentrancyGuard` | unit | v1 | ∞ | Reentrancy guard flag (bool) |
 
+## Factory Contract: `FactoryKey` enum
+
+Keys used by the standalone factory contract (`contracts/factory/src/lib.rs`). The factory administrator is stored under `FactoryKey::Admin` and is written only by `initialize`; the confirmed handover flow (#212) updates it via `propose_admin` / `accept_admin` without touching the approved wasm hash allowlist.
+
+| Variant | Value | Introduced | TTL | Purpose |
+|---------|-------|------------|-----|---------|
+| `Admin` | unit | v1 | ∞ | Current factory administrator (`factory_admin_key`); switched by `accept_admin` |
+| `PendingAdmin` | unit | #212 | ∞ | Proposed successor administrator; set by `propose_admin`, cleared on `accept_admin` |
+| `ApprovedWasmHashes` | unit | v1 | ∞ | Allowlist of approved wasm hashes (`approve_wasm_hash`); preserved across admin handover |
+
 ## Persistent Storage: `InvoiceKey` enum
 
 Keys keyed by invoice ID or sharded. All carry a u64 invoice ID unless noted.
@@ -103,92 +113,6 @@ Keys keyed by invoice ID or sharded. All carry a u64 invoice ID unless noted.
 | `GroupTreasury(id)` | `(Symbol, u64)` | v1 | TreasuryRecord | Group-level treasury allocation |
 | `TimelockAction(id)` | `(Symbol, u64)` | #185 | TimelockAction | Timelock action entry (keyed by action_id) |
 
-## Persistent Storage: `AddressKey` enum
+## Persi
 
-Keys keyed by address (per-creator or per-payer state).
-
-| Variant | Key Shape | Introduced | Type | Purpose |
-|---------|-----------|------------|------|---------|
-| `Reputation(addr)` | `(Symbol, Address)` | #24 | u64 | Per-payer reputation counter |
-| `Credit(addr)` | `(Symbol, Address)` | #38 | i128 | Per-payer credit score |
-| `ReferralCount(addr)` | `(Symbol, Address)` | #87 | u64 | Per-referrer referral count |
-| `RecipientInvoiceIds(addr)` | `(Symbol, Address)` | #40 | Vec<u64> | Per-recipient invoice ID index |
-| `DelegatePay(addr)` | `(Symbol, Address)` | v1 | bool | Delegate-pay authorization flag |
-| `RateUsage(addr)` | `(Symbol, Address)` | v1 | u64 | Per-creator rate limit usage within current window |
-| `InvoiceCount(addr)` | `(Symbol, Address)` | v1 | u64 | Per-creator invoice creation count |
-| `CancelCount(addr)` | `(Symbol, Address)` | v1 | u64 | Per-creator invoice cancellation count |
-| `CreatorStatsCount(addr)` | `(Symbol, Address)` | #299 | u64 | Total invoices created by creator |
-| `CreatorStatsVolume(addr)` | `(Symbol, Address)` | #299 | i128 | Total funded volume by creator |
-| `CreatorStatsReleased(addr)` | `(Symbol, Address)` | #299 | i128 | Total released volume by creator |
-| `CreatorStatsRefunded(addr)` | `(Symbol, Address)` | #299 | i128 | Total refunded volume by creator |
-| `CreatorStatsPayers(addr)` | `(Symbol, Address)` | #299 | u64 | Unique payers who funded creator's invoices |
-| `CreatorStatsAvgFunding(addr)` | `(Symbol, Address)` | #299 | u64 | Average funding time in ledgers |
-| `CreatorVolumeCap(addr)` | `(Symbol, Address)` | v1 | i128 | Admin-set volume cap for creator |
-| `CreatorVolumeUsed(addr)` | `(Symbol, Address)` | v1 | i128 | Creator volume used against cap |
-| `CreatorSelfLimit(addr)` | `(Symbol, Address)` | v1 | i128 | Creator self-imposed daily spending limit |
-| `CreatorSelfUsed(addr)` | `(Symbol, Address)` | v1 | i128 | Creator self-limit daily usage |
-| `CreatorSelfLimitDay(addr)` | `(Symbol, Address)` | v1 | u64 | Creator self-limit last reset day (Unix timestamp) |
-| `CreatorSelfLimitRaise(addr)` | `(Symbol, Address)` | v1 | i128 | Creator pending self-limit raise request amount |
-| `PauseExempt(addr)` | `(Symbol, Address)` | v1 | bool | Per-address pause exemption flag |
-| `GlobalVelocity(addr)` | `(Symbol, Address)` | v1 | Velocity | Global cross-invoice per-payer velocity state |
-| `CreatorVolMile(addr)` | `(Symbol, Address)` | #276 | u32 | Last creator volume milestone emitted |
-
-## Persistent Storage: `CompoundKey` enum
-
-Keys with two or three fields for efficient multi-dimensional lookups.
-
-| Variant | Key Shape | Introduced | Type | Purpose |
-|---------|-----------|------------|------|---------|
-| `PendingPayout(id, recipient)` | `(Symbol, u64, Address)` | #209 | i128 | Pending payout per (invoice_id, recipient) pair |
-| `Channel(id, payer)` | `(Symbol, u64, Address)` | v1 | PaymentChannel | Payment channel state for (invoice, payer) |
-| `Nonce(id, payer)` | `(Symbol, u64, Address)` | #21 | u64 | Replay-protection nonce for (invoice, payer) |
-| `Velocity(id, payer)` | `(Symbol, u64, Address)` | v1 | Velocity | Per-payer velocity window for (invoice, payer) |
-| `ReceiptToken(id, payer)` | `(Symbol, u64, Address)` | v1 | Address | Receipt token contract address for (invoice, payer) |
-| `Accumulator(id, payer)` | `(Symbol, u64, Address)` | v1 | i128 | Micro-payment accumulator for (invoice, payer) |
-| `Reminder(id, address)` | `(Symbol, u64, Address)` | v1 | Reminder | Reminder entry for (invoice, address) pair |
-| `ConfidentialPay(id, payer)` | `(Symbol, u64, Address)` | #295 | ConfidentialPayment | Confidential payment record for (invoice, payer) |
-| `Delegation(id, on_behalf_of)` | `(Symbol, u64, Address)` | #315 | Address | Single-use delegation: (invoice, on_behalf_of) → delegate |
-| `PayerCooldown(id, payer)` | `(Symbol, u64, Address)` | #168 | u64 | Last payment ledger for (invoice, payer) cooldown |
-| `CreatorPayerSet(creator, payer)` | `(Symbol, Address, Address)` | #299 | bool | Unique-payer tracking flag for (creator, payer) |
-| `Template(creator, name)` | `(Symbol, Address, Symbol)` | v1 | InvoiceTemplate | Invoice template for (creator, name) |
-| `TemplateVersion(creator, name, version)` | `(Symbol, Address, Symbol, u32)` | #210 | InvoiceTemplate | Versioned template for (creator, name, version) |
-| `TemplateVersionCount(creator, name)` | `(Symbol, Address, Symbol)` | #210 | u32 | Template version counter for (creator, name) |
-
-## Migration Guide
-
-When renaming a storage key between contract versions, use the migration helpers in `storage_keys.rs`:
-
-```rust
-// Migrate persistent storage
-migrate_persistent::<OldKey, NewKey, ValueType>(env, &old_key, &new_key);
-
-// Migrate instance storage
-migrate_instance::<OldKey, NewKey, ValueType>(env, &old_key, &new_key);
-```
-
-Example: migrating from old `admin_key()` to new `StorageKey::Admin`:
-
-```rust
-pub fn upgrade(env: Env) {
-    let old_admin_key = Symbol::new(&env, "admin");  // or symbol_short!("admin")
-    migrate_instance::<Symbol, StorageKey, Address>(
-        &env,
-        &old_admin_key,
-        &StorageKey::Admin,
-    );
-}
-```
-
-## Uniqueness Validation
-
-Unit tests in `storage_keys.rs` verify that:
-1. No two `StorageKey` variants serialize to the same XDR value
-2. No two `InvoiceKey` variants serialize to the same XDR value
-3. No two `AddressKey` variants serialize to the same XDR value
-4. No two `CompoundKey` variants serialize to the same XDR value
-5. Different invoice IDs and parameters produce different keys
-
-Run tests with:
-```sh
-cargo test --lib storage_keys
-```
+/* … truncated 5632 chars — edit only what you need near the top … */

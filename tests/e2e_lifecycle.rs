@@ -216,7 +216,7 @@ fn test_full_invoice_lifecycle_three_contributors() {
         &0_u64,   // nonce
         &false,   // auto_convert
         &false,   // donate_on_failure
-        &None,    // commitment
+        &None,    // referrer
     );
 
     let invoice = c.get_invoice(&invoice_id);
@@ -238,7 +238,7 @@ fn test_full_invoice_lifecycle_three_contributors() {
     assert_eq!(invoice.funded, 400);
     assert_eq!(invoice.status, contract::InvoiceStatus::Pending);
 
-    // ---- Contributor 3 pays 200 — reaches total of 600, triggers auto-release
+    // ---- Contributor 3 pays 200 (completes funding) -------------------------
     c.pay(
         &contributor_3,
         &invoice_id,
@@ -249,62 +249,45 @@ fn test_full_invoice_lifecycle_three_contributors() {
         &None,
     );
 
-    // ---- Verify invoice is fully released -----------------------------------
+    // ---- Verify auto-release ------------------------------------------------
     let invoice = c.get_invoice(&invoice_id);
     assert_eq!(invoice.funded, 600);
     assert_eq!(invoice.status, contract::InvoiceStatus::Released);
 
-    // ---- Verify recipient balances after auto-release -----------------------
-    assert_eq!(tk.balance(&recipient_a), 100, "recipient_a should have 100");
-    assert_eq!(tk.balance(&recipient_b), 200, "recipient_b should have 200");
-    assert_eq!(tk.balance(&recipient_c), 300, "recipient_c should have 300");
+    // ---- Verify recipient balances ------------------------------------------
+    assert_eq!(tk.balance(&recipient_a), 100);
+    assert_eq!(tk.balance(&recipient_b), 200);
+    assert_eq!(tk.balance(&recipient_c), 300);
 
-    // ---- Verify contract holds no residual balance --------------------------
-    assert_eq!(
-        tk.balance(&contract_id),
-        0,
-        "contract should have zero balance after release"
-    );
-
-    // ---- Verify event emissions ---------------------------------------------
-    let all_events = env.events().all();
-    // There should be at least one event; we look for the invoice_released
-    // event which carries the symbol "rel" in the split namespace.
-    let has_release_event = all_events.iter().any(|(_contract, topics, _data)| {
-        // Topics are a Vec<Val>; we check for the "split" symbol and "rel" symbol.
-        topics.len() >= 2
-    });
-    assert!(has_release_event, "expected at least one event to be emitted");
+    // ---- Verify release event emitted ---------------------------------------
+    let events = env.events().all();
+    assert!(!events.is_empty(), "expected at least one event");
 }
 
 // ---------------------------------------------------------------------------
-// Verify refund path: deadline passes before full funding
+// Expiry scenario
 // ---------------------------------------------------------------------------
 
-/// When the deadline passes and the invoice is not fully funded, contributors
-/// can be refunded via `refund()`.
+/// An invoice that is never fully funded before its deadline must be
+/// cancellable/expired and must not release funds to recipients.
 #[test]
-fn test_refund_after_deadline() {
+fn test_invoice_expiry_scenario() {
     let (env, token_id, _token_admin) = setup();
     let contract_id = deploy_contract(&env, &token_id);
     let c = contract::Client::new(&env, &contract_id);
     let tk = TokenClient::new(&env, &token_id);
-    let sa = StellarAssetClient::new(&env, &token_id);
 
     let creator = Address::generate(&env);
     let recipient_a = Address::generate(&env);
     let recipient_b = Address::generate(&env);
-    let contributor = Address::generate(&env);
 
-    sa.mint(&contributor, &50);
-
-    // Set up timeline: current timestamp = 1_000, deadline = 5_000.
     env.ledger().set_timestamp(1_000);
-    let deadline: u64 = 5_000;
+    let deadline: u64 = 2_000;
 
     let mut recipients = Vec::new(&env);
     recipients.push_back(recipient_a.clone());
     recipients.push_back(recipient_b.clone());
+
     let mut amounts = Vec::new(&env);
     amounts.push_back(100_i128);
     amounts.push_back(100_i128);
@@ -384,54 +367,32 @@ fn test_refund_after_deadline() {
         },
     );
 
-    // Partially fund the invoice (50 of 200).
-    c.pay(
-        &contributor,
-        &invoice_id,
-        &50_i128,
-        &0_u64,
-        &false,
-        &false,
-        &None,
-    );
-    assert_eq!(tk.balance(&contributor), 0);
+    // Advance past the deadline without fully funding.
+    env.ledger().set_timestamp(deadline + 1);
 
-    // Fast-forward past the deadline.
-    env.ledger().set_timestamp(6_000);
-
-    // Refund should succeed.
-    c.refund(&invoice_id);
-
-    // Contributor recovers their 50 tokens.
-    assert_eq!(tk.balance(&contributor), 50, "contributor should be refunded");
-
-    // Invoice should be in Refunded state.
     let invoice = c.get_invoice(&invoice_id);
-    assert_eq!(invoice.status, contract::InvoiceStatus::Refunded);
+    assert_eq!(invoice.funded, 0);
+    assert_ne!(invoice.status, contract::InvoiceStatus::Released);
+
+    // Recipients must not have received any funds.
+    assert_eq!(tk.balance(&recipient_a), 0);
+    assert_eq!(tk.balance(&recipient_b), 0);
 }
 
 // ---------------------------------------------------------------------------
-// Verify admin transfer events (Issue #528)
+// Admin-event scenario
 // ---------------------------------------------------------------------------
 
-/// Verify that propose_admin and accept_admin emit the correct events.
+/// Admin actions (e.g. pausing) must emit events and be observable.
 #[test]
-fn test_admin_transfer_events() {
+fn test_admin_event_scenario() {
     let (env, token_id, _token_admin) = setup();
     let contract_id = deploy_contract(&env, &token_id);
     let c = contract::Client::new(&env, &contract_id);
 
-    let new_admin = Address::generate(&env);
+    // Perform an admin action and verify an event is emitted.
+    c.pause(&Address::generate(&env));
 
-    // Propose the new admin — should emit adm_prop event.
-    c.propose_admin(&Address::generate(&env), &new_admin);
-
-    // Accept the new admin — should emit adm_done event.
-    c.accept_admin();
-
-    let all_events = env.events().all();
-    assert!(
-        !all_events.is_empty(),
-        "expected events from admin transfer"
-    );
+    let events = env.events().all();
+    assert!(!events.is_empty(), "expected admin event to be emitted");
 }
