@@ -252,6 +252,10 @@ fn test_cancel_transfer_emits_event() {
 
 #[test]
 fn test_full_admin_transfer_round_trip() {
+    use soroban_sdk::testutils::MockAuth;
+    use soroban_sdk::testutils::MockAuthInvoke;
+    use soroban_sdk::IntoVal;
+
     let (env, contract_id) = setup();
     let client = InvoiceEscrowContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
@@ -260,9 +264,19 @@ fn test_full_admin_transfer_round_trip() {
 
     client.initialize(&admin);
 
-    // First transfer: propose → accept
+    // First transfer: propose → accept with the pending admin's scoped auth.
     client.transfer_admin(&new_admin);
     assert_eq!(client.get_pending_admin(), Some(new_admin.clone()));
+
+    env.mock_auths(&[MockAuth {
+        address: &new_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
     client.accept_admin();
     assert_eq!(client.get_admin(), new_admin);
 
@@ -272,6 +286,33 @@ fn test_full_admin_transfer_round_trip() {
     assert_eq!(client.get_pending_admin(), None);
 
     client.transfer_admin(&third_admin);
+
+    // Only the outgoing admin is authorized — accept_admin must fail because
+    // it requires the pending admin's authorization.
+    env.mock_auths(&[MockAuth {
+        address: &new_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    let result = client.try_accept_admin();
+    assert!(result.is_err(), "accept_admin must fail without pending admin auth");
+    assert_eq!(client.get_admin(), new_admin);
+    assert_eq!(client.get_pending_admin(), Some(third_admin.clone()));
+
+    // With the pending admin's scoped auth, the transfer completes.
+    env.mock_auths(&[MockAuth {
+        address: &third_admin,
+        invoke: &MockAuthInvoke {
+            contract: &contract_id,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
     client.accept_admin();
     assert_eq!(client.get_admin(), third_admin);
 }

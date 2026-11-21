@@ -211,8 +211,13 @@ pub fn funding_bps(funded: i128, total: i128) -> u32 {
     if funded >= total {
         return 10_000;
     }
-    // funded < total, both positive — safe to cast to u128 and divide.
-    let bps = (funded as u128 * 10_000u128) / (total as u128);
+    // funded < total, both positive. Widen to u128 before multiplying by
+    // 10_000 so large representable values (e.g. funded near u32::MAX) do not
+    // overflow the intermediate product. (#243)
+    let bps = (funded as u128)
+        .checked_mul(10_000u128)
+        .map(|num| num / (total as u128))
+        .unwrap_or(10_000);
     // bps is in [0, 9_999] since funded < total; the clamp is a safeguard.
     bps.min(10_000) as u32
 }
@@ -454,6 +459,39 @@ mod tests {
         let bps = funding_bps(999, 1_000);
         assert!(bps < 10_000);
         assert!(bps > 9_980); // should be ~9_990
+    }
+
+    #[test]
+    fn test_funding_bps_large_partial_values() {
+        // funded near u32::MAX with a larger total must not overflow the
+        // intermediate `funded * 10_000` product. (#243)
+        let funded = u32::MAX as i128; // 4_294_967_295
+        let total = funded * 2; // 8_589_934_590
+        // Exact ratio is 50% → 5_000 bps.
+        assert_eq!(funding_bps(funded, total), 5_000);
+
+        // A value whose floored bps is non-trivial: funded = 3/4 of total.
+        let total2 = funded * 4;
+        let funded2 = funded * 3;
+        assert_eq!(funding_bps(funded2, total2), 7_500);
+    }
+
+    #[test]
+    fn test_funding_bps_large_partial_floors_correctly() {
+        // funded * 10_000 overflows u32 but fits u128; verify floored result.
+        let funded = u32::MAX as i128;
+        let total = funded + 1;
+        // funded / total is just under 1 → floored bps = 9_999.
+        assert_eq!(funding_bps(funded, total), 9_999);
+    }
+
+    #[test]
+    fn test_funding_bps_large_zero_and_full_regression() {
+        // Zero-funded and full/overfunded semantics unchanged for large totals.
+        let large = u32::MAX as i128 * 3;
+        assert_eq!(funding_bps(0, large), 0);
+        assert_eq!(funding_bps(large, large), 10_000);
+        assert_eq!(funding_bps(large + 1, large), 10_000);
     }
 
     // -----------------------------------------------------------------------
