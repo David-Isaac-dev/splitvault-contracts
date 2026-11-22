@@ -3433,11 +3433,13 @@ impl SplitContract {
     }
 
     /// Return the highest funding checkpoint already emitted for an invoice.
-    pub fn get_last_funding_checkpoint(env: Env, invoice_id: u64) -> u32 {
+    /// Returns `Some(bps)` for a known invoice and `None` for an unknown one,
+    /// letting callers distinguish a real zero-progress invoice from a missing
+    /// record (issue #276).
+    pub fn get_last_funding_checkpoint(env: Env, invoice_id: u64) -> Option<u32> {
         env.storage()
             .persistent()
             .get(&last_checkpoint_key(invoice_id))
-            .unwrap_or(0u32)
     }
 
     /// Issue #439: Set the cancellation cooldown period in ledgers. Requires admin auth.
@@ -4751,8 +4753,19 @@ impl SplitContract {
     }
 
     /// Return the registered fee recipients, if any.
+    /// Returns `None` when the override has been cleared, meaning fee routing
+    /// falls back to the single-treasury default.
     pub fn get_fee_recipients(env: Env) -> Option<Vec<FeeSplit>> {
         env.storage().instance().get(&fee_recipients_key())
+    }
+
+    /// Issue #275: Remove the fee-recipients override so fee routing reverts to
+    /// the default single-treasury path.  Requires admin auth.
+    pub fn reset_fee_recipients(env: Env, admin: Address) {
+        require_admin(&env);
+        admin.require_auth();
+        env.storage().instance().remove(&fee_recipients_key());
+        events::fee_recipients_reset(&env);
     }
 
     /// Issue #596: Query whether the contract is currently paused.
