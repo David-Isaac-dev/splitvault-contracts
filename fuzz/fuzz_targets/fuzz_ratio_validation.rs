@@ -23,17 +23,8 @@ fuzz_target!(|input: Input| {
     let env = Env::default();
     let (contract_id, token_id) = setup(&env);
     let c = client(&env, &contract_id);
-    c.initialize(
-        &Address::generate(&env),
-        &0,
-        &Address::generate(&env),
-        &token_id,
-        &0,
-        &None,
-        &0,
-        &0,
-        &0,
-    );
+    // Issue #279: `setup` now initializes the Split instance with a default
+    // baseline, so this target no longer needs to call `initialize` itself.
 
     let n = usize::from(input.n_recipients % 3) + 2;
     let mut cuts = input

@@ -2951,7 +2951,23 @@ impl SplitContract {
         env.storage().instance().set(&admins_key(), &admins);
     }
 
-    /// Issue #472: Pause the contract. Requires admin auth.
+    /// Issue #472: Pause the contract.
+    ///
+    /// Issue #273 — which signer may pause directly depends on whether a
+    /// primary admin has been stored:
+    /// - **Initialized deployment** (after `initialize`, which writes the
+    ///   primary admin under the `admin` key): only that exact stored
+    ///   primary-admin address may pause. The `admin` argument **must equal**
+    ///   the address passed to `initialize`; any other signer — including one
+    ///   holding an `Operator` role — is rejected with `NotAuthorized`. Clients
+    ///   operating an initialized contract should therefore pass the stored
+    ///   primary admin as `admin`, not an operator.
+    /// - **Uninitialized deployment** (no primary admin stored): the call
+    ///   falls back to the RBAC map and requires an `Operator` role (or
+    ///   higher) for `admin`, checked via `require_admin_role_unguarded`.
+    ///
+    /// In both cases `admin.require_auth()` is invoked, so the invocation must
+    /// be signed by the supplied `admin` address. Emits `contract_paused`.
     pub fn pause(env: Env, admin: Address) {
         migrations::require_schema_current(&env);
         admin.require_auth();
@@ -2964,7 +2980,20 @@ impl SplitContract {
         events::contract_paused(&env, &admin);
     }
 
-    /// Issue #472: Unpause the contract. Requires admin auth.
+    /// Issue #472: Unpause the contract.
+    ///
+    /// Issue #273 — authorization mirrors [`Self::pause`] exactly: which signer
+    /// may unpause depends on whether a primary admin has been stored.
+    /// - **Initialized deployment**: only the stored primary-admin address
+    ///   (the one passed to `initialize`) may unpause; the `admin` argument
+    ///   **must equal** that address. Operator-role signers are rejected with
+    ///   `NotAuthorized`. Clients operating an initialized contract should pass
+    ///   the stored primary admin as `admin`, not an operator.
+    /// - **Uninitialized deployment**: the call falls back to the RBAC map and
+    ///   requires an `Operator` role (or higher) for `admin`.
+    ///
+    /// `admin.require_auth()` is invoked, so the invocation must be signed by
+    /// the supplied `admin` address. Emits `contract_unpaused`.
     pub fn unpause(env: Env, admin: Address) {
         migrations::require_schema_current(&env);
         admin.require_auth();
@@ -3213,6 +3242,11 @@ impl SplitContract {
     }
 
     /// Issue #473: Add an asset contract address to the allowed tokens list.
+    ///
+    /// Idempotent: adding a token that is already allowed is a no-op and
+    /// publishes no event. An *effective* addition emits `allowed_token_updated`
+    /// (Issue #274) with `added = true` so off-chain consumers can track the
+    /// configured token set without re-reading the whole list.
     pub fn add_allowed_token(env: Env, admin: Address, token: Address) {
         migrations::require_schema_current(&env);
         admin.require_auth();
@@ -3231,10 +3265,18 @@ impl SplitContract {
             env.storage()
                 .persistent()
                 .set(&storage_keys::allowed_tokens_key(), &allowed);
+            // Issue #274: publish the effective transition so off-chain
+            // consumers can track the configured token set without polling.
+            events::allowed_token_updated(&env, &admin, &token, true);
         }
     }
 
     /// Issue #473: Remove an asset contract address from the allowed tokens list.
+    ///
+    /// Idempotent: removing a token that is not present is a no-op and
+    /// publishes no event. An *effective* removal emits `allowed_token_updated`
+    /// (Issue #274) with `added = false` so off-chain consumers can track the
+    /// configured token set without re-reading the whole list.
     pub fn remove_allowed_token(env: Env, admin: Address, token: Address) {
         migrations::require_schema_current(&env);
         admin.require_auth();
@@ -3253,6 +3295,9 @@ impl SplitContract {
             env.storage()
                 .persistent()
                 .set(&storage_keys::allowed_tokens_key(), &allowed);
+            // Issue #274: publish the effective transition so off-chain
+            // consumers can track the configured token set without polling.
+            events::allowed_token_updated(&env, &admin, &token, false);
         }
     }
 
@@ -4441,6 +4486,18 @@ impl SplitContract {
         Ok(bps as u32)
     }
 
+    /// Issue #278: Hot read for an invoice's deadline.
+    ///
+    /// # ABI note for generated clients
+    /// The signature is `Option<u64>`, but absence is **not** representable
+    /// here: for an unknown `invoice_id` the contract traps with
+    /// [`ContractError::InvoiceNotFound`] (error code `2`) instead of
+    /// returning `None`. In practice the returned `Option` is always `Some`
+    /// for a present invoice, so a generated client that treats a `None`
+    /// result as "no such invoice" is mistaken — it will instead hit a trap.
+    /// To distinguish "absent" from "present", use the generated
+    /// `try_get_invoice_deadline` variant and match on the
+    /// `Err(InvoiceNotFound)` branch (see `docs/API.md`).
     pub fn get_invoice_deadline(env: Env, invoice_id: u64) -> Option<u64> {
         if let Some(core) = env
             .storage()
@@ -4459,6 +4516,18 @@ impl SplitContract {
         }
     }
 
+    /// Issue #278: Hot read for the amount funded on an invoice so far.
+    ///
+    /// # ABI note for generated clients
+    /// The signature is `Option<i128>`, but absence is **not** representable
+    /// here: for an unknown `invoice_id` the contract traps with
+    /// [`ContractError::InvoiceNotFound`] (error code `2`) instead of
+    /// returning `None`. In practice the returned `Option` is always `Some`
+    /// for a present invoice, so a generated client that treats a `None`
+    /// result as "no such invoice" is mistaken — it will instead hit a trap.
+    /// To distinguish "absent" from "present", use the generated
+    /// `try_get_invoice_funded` variant and match on the
+    /// `Err(InvoiceNotFound)` branch (see `docs/API.md`).
     pub fn get_invoice_funded(env: Env, invoice_id: u64) -> Option<i128> {
         if let Some(hot) = env
             .storage()
@@ -4483,6 +4552,22 @@ impl SplitContract {
         }
     }
 
+    /// Issue #278: Hot read for an invoice's effective status.
+    ///
+    /// The status is computed dynamically: a `Pending` invoice whose deadline
+    /// has passed is surfaced as `Expired` without requiring an on-chain
+    /// `notify_expired` call.
+    ///
+    /// # ABI note for generated clients
+    /// The signature is `Option<InvoiceStatus>`, but absence is **not**
+    /// representable here: for an unknown `invoice_id` the contract traps with
+    /// [`ContractError::InvoiceNotFound`] (error code `2`) instead of
+    /// returning `None`. In practice the returned `Option` is always `Some`
+    /// for a present invoice, so a generated client that treats a `None`
+    /// result as "no such invoice" is mistaken — it will instead hit a trap.
+    /// To distinguish "absent" from "present", use the generated
+    /// `try_get_invoice_status` variant and match on the
+    /// `Err(InvoiceNotFound)` branch (see `docs/API.md`).
     pub fn get_invoice_status(env: Env, invoice_id: u64) -> Option<InvoiceStatus> {
         // Issue #59: compute effective status dynamically — a Pending invoice
         // whose deadline has passed is returned as Expired without requiring an

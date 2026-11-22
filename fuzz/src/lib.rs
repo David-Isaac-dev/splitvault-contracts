@@ -7,6 +7,14 @@
 //! any interaction with `std::panic::catch_unwind` or panic hooks, which are
 //! incompatible with the soroban host's own internal panic-to-HostError
 //! escalation path.
+//!
+//! Issue #279: [`setup`] returns an *initialized* baseline — it registers the
+//! contract and asset and then calls `initialize`, which stamps the schema
+//! version. Without that, every lifecycle entry point trips
+//! `MigrationRequired` (via `require_schema_current`) and the fuzz run spends
+//! itself exercising setup errors instead of protocol logic. Targets that
+//! need a custom configuration use [`setup_raw`] and call `initialize`
+//! themselves.
 
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::token::StellarAssetClient;
@@ -21,8 +29,29 @@ use split::{SplitContract, SplitContractClient};
 pub const PAYER_BALANCE: i128 = i128::MAX;
 
 /// Register a fresh `SplitContract` plus a funded Stellar asset token in a
-/// brand-new [`Env`]. Mirrors `split::test::setup()`.
+/// brand-new [`Env`] **and initialize the Split instance**, mirroring
+/// `split::test::setup()` followed by `split::test::init_contract()`.
+///
+/// Issue #279: the shared fixture previously only registered the contract and
+/// asset, leaving the Split instance uninitialized. Every lifecycle entry
+/// point calls `migrations::require_schema_current`, so an uninitialized
+/// fixture made each fuzz run trip `MigrationRequired` before exercising any
+/// real logic. This baseline initializes with zero fees and a generated
+/// admin/treasury so lifecycle fuzz targets drive the protocol, not setup.
+///
+/// Use [`setup_raw`] instead when a target must initialize with custom
+/// parameters (e.g. a randomized platform fee).
 pub fn setup(env: &Env) -> (Address, Address) {
+    let (contract_id, token_id) = setup_raw(env);
+    init_contract(env, &contract_id, &token_id);
+    (contract_id, token_id)
+}
+
+/// Register a fresh `SplitContract` plus a funded Stellar asset token in a
+/// brand-new [`Env`] **without** initializing the Split instance. Use this only
+/// when a fuzz target must call `initialize` with custom parameters; otherwise
+/// prefer [`setup`], which returns an initialized baseline.
+pub fn setup_raw(env: &Env) -> (Address, Address) {
     env.mock_all_auths();
     let contract_id = env.register(SplitContract, ());
     let token_admin = Address::generate(env);
@@ -31,6 +60,18 @@ pub fn setup(env: &Env) -> (Address, Address) {
         .address();
     StellarAssetClient::new(env, &token_id).mint(&token_admin, &PAYER_BALANCE);
     (contract_id, token_id)
+}
+
+/// Initialize a registered Split contract with a zero-fee, default baseline,
+/// mirroring `split::test::init_contract`. `initialize` stamps the schema
+/// version, so lifecycle entry points stop tripping `MigrationRequired`.
+pub fn init_contract(env: &Env, contract_id: &Address, token_id: &Address) {
+    let c = client(env, contract_id);
+    let admin = Address::generate(env);
+    let treasury = Address::generate(env);
+    c.initialize(
+        &admin, &0_i128, &treasury, token_id, &0_u32, &None, &0_u32, &0_u32, &0_u64,
+    );
 }
 
 pub fn client<'a>(env: &'a Env, contract_id: &Address) -> SplitContractClient<'a> {

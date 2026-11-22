@@ -9881,6 +9881,157 @@ fn test_get_invoice_status_not_found() {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #273: direct pause/unpause role requirements on initialized contracts
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_273_primary_admin_can_directly_pause_and_unpause() {
+    let (env, contract_id, token_id) = setup();
+    let admin = init_with_admin(&env, &contract_id, &token_id);
+    let c = client(&env, &contract_id);
+
+    // The stored primary admin (the address passed to `initialize`) can pause
+    // and unpause directly on an initialized deployment.
+    c.pause(&admin);
+    assert!(c.is_paused());
+    c.unpause(&admin);
+    assert!(!c.is_paused());
+}
+
+#[test]
+#[should_panic(expected = "NotAuthorized")]
+fn test_273_operator_cannot_directly_pause_initialized_contract() {
+    let (env, contract_id, token_id) = setup();
+    let admin = init_with_admin(&env, &contract_id, &token_id);
+    let c = client(&env, &contract_id);
+
+    // An Operator role is not the stored primary admin, so a direct pause on an
+    // initialized deployment is rejected with NotAuthorized.
+    let operator = Address::generate(&env);
+    c.add_admin(&admin, &operator, &AdminRole::Operator);
+    c.pause(&operator);
+}
+
+#[test]
+#[should_panic(expected = "NotAuthorized")]
+fn test_273_operator_cannot_directly_unpause_initialized_contract() {
+    let (env, contract_id, token_id) = setup();
+    let admin = init_with_admin(&env, &contract_id, &token_id);
+    let c = client(&env, &contract_id);
+
+    let operator = Address::generate(&env);
+    c.add_admin(&admin, &operator, &AdminRole::Operator);
+    c.pause(&admin);
+    c.unpause(&operator);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #274: allowed-token transition events
+// ---------------------------------------------------------------------------
+
+/// Count `alw_tok` events emitted by the most recent contract call.
+fn count_alw_tok_events(env: &Env) -> usize {
+    env.events()
+        .all()
+        .events()
+        .iter()
+        .filter(|event| {
+            xdr_event_topics(env, event)
+                .map(|topics| topic1_is(env, &topics, "alw_tok"))
+                .unwrap_or(false)
+        })
+        .count()
+}
+
+/// Extract the `added` flag from the `alw_tok` event of the most recent call,
+/// or `None` if none was emitted. Data layout: `(admin, token, added, ledger)`.
+fn alw_tok_event_added_flag(env: &Env) -> Option<bool> {
+    use soroban_sdk::TryIntoVal;
+    for event in env.events().all().events().iter() {
+        let soroban_sdk::xdr::ContractEventBody::V0(body) = &event.body;
+        if let Some(topics) = xdr_event_topics(env, event) {
+            if topic1_is(env, &topics, "alw_tok") {
+                if let Ok(data_val) = <soroban_sdk::Val as soroban_sdk::TryFromVal<
+                    Env,
+                    soroban_sdk::xdr::ScVal,
+                >>::try_from_val(env, &body.data)
+                {
+                    let decoded: (Address, Address, bool, u32) = data_val.try_into_val(env).ok()?;
+                    return Some(decoded.2);
+                }
+                return None;
+            }
+        }
+    }
+    None
+}
+
+#[test]
+fn test_274_allowed_token_transition_events() {
+    let (env, contract_id, token_id) = setup();
+    let admin = init_with_admin(&env, &contract_id, &token_id);
+    let c = client(&env, &contract_id);
+
+    let token_a = Address::generate(&env);
+    let token_b = Address::generate(&env);
+
+    // Effective add publishes exactly one transition event with added = true.
+    c.add_allowed_token(&admin, &token_a);
+    assert_eq!(
+        count_alw_tok_events(&env),
+        1,
+        "effective add should emit one alw_tok event"
+    );
+    assert_eq!(
+        alw_tok_event_added_flag(&env),
+        Some(true),
+        "add event should carry added = true"
+    );
+
+    // Redundant add (token already present) is a no-op and publishes nothing.
+    c.add_allowed_token(&admin, &token_a);
+    assert_eq!(
+        count_alw_tok_events(&env),
+        0,
+        "redundant add should emit no event"
+    );
+
+    // A second distinct token is an effective add.
+    c.add_allowed_token(&admin, &token_b);
+    assert_eq!(
+        count_alw_tok_events(&env),
+        1,
+        "effective add of a second token should emit one event"
+    );
+
+    // Effective remove publishes exactly one transition event with added = false.
+    c.remove_allowed_token(&admin, &token_a);
+    assert_eq!(
+        count_alw_tok_events(&env),
+        1,
+        "effective remove should emit one alw_tok event"
+    );
+    assert_eq!(
+        alw_tok_event_added_flag(&env),
+        Some(false),
+        "remove event should carry added = false"
+    );
+
+    // Redundant remove is a no-op and publishes nothing.
+    c.remove_allowed_token(&admin, &token_a);
+    assert_eq!(
+        count_alw_tok_events(&env),
+        0,
+        "redundant remove should emit no event"
+    );
+
+    // State reflects the transitions: only token_b remains.
+    let remaining = c.get_allowed_tokens();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining.get(0).unwrap(), token_b);
+}
+
+// ---------------------------------------------------------------------------
 // Issues #690-#693 — InvoiceOptions validation at invoice creation
 // ---------------------------------------------------------------------------
 

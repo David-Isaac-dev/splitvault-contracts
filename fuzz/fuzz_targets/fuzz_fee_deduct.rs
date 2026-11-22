@@ -13,7 +13,7 @@ use libfuzzer_sys::fuzz_target;
 use soroban_sdk::testutils::{Address as _, Ledger};
 use soroban_sdk::{Address, Env, Vec};
 use split::types::{InvoiceOptions, OverflowBehavior};
-use split_fuzz::{client, default_options, fund, offset_timestamp, setup};
+use split_fuzz::{client, default_options, fund, offset_timestamp, setup_raw};
 
 #[derive(Debug, Arbitrary)]
 struct Input {
@@ -26,7 +26,9 @@ struct Input {
 
 fuzz_target!(|input: Input| {
     let env = Env::default();
-    let (contract_id, token_id) = setup(&env);
+    // Issue #279: use the registration-only fixture so we can initialize with
+    // the fuzzed `platform_fee_bps` below — `setup` would initialize with 0.
+    let (contract_id, token_id) = setup_raw(&env);
     let c = client(&env, &contract_id);
 
     let n = ((input.n_recipients as usize % 4) + 1).min(4);
