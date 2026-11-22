@@ -1094,6 +1094,15 @@ pub fn fee_recipients_updated(env: &Env, recipients: &Vec<FeeSplit>) {
     );
 }
 
+/// Issue #275: Emitted when the fee-recipients override is cleared, restoring
+/// the default treasury route.
+pub fn fee_recipients_reset(env: &Env) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("fee_rc_rs")),
+        (),
+    );
+}
+
 /// Issue #326: Emitted when a protocol fee is paid to treasury on release.
 ///
 /// Topics: (split, fee_paid, invoice_id)
