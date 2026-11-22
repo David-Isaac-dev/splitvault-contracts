@@ -885,6 +885,20 @@ pub fn contract_unpaused(env: &Env, admin: &Address) {
     );
 }
 
+/// Issue #274: Emitted when an asset is added to or removed from the
+/// contract-wide allowed-tokens list. This is a *contract-level* transition
+/// event with no `invoice_id`, so it deliberately does not carry an
+/// `event_seq`. Published only for an effective change — adding a token that
+/// is already present, or removing one that is absent, publishes nothing.
+/// Topics: (split, alw_tok)
+/// Data: (admin, token, added, ledger)
+pub fn allowed_token_updated(env: &Env, admin: &Address, token: &Address, added: bool) {
+    env.events().publish(
+        (symbol_short!("split"), symbol_short!("alw_tok")),
+        (admin.clone(), token.clone(), added, env.ledger().sequence()),
+    );
+}
+
 /// Issue #327: Emitted when funds become releasable after the time-lock delay expires.
 /// Topics: (split, fnd_unlk, invoice_id)
 /// Data: unlock_ledger

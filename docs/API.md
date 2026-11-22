@@ -106,6 +106,17 @@ pub fn pause(env: Env, admin: Address)
 
 Pauses the contract. All state-mutating operations are blocked except for addresses with a pause exemption.
 
+**Which signer can pause (Issue #273):** the `admin` argument must satisfy one of two
+paths, chosen by deployment state:
+
+| Deployment state | Required signer | Behavior |
+|---|---|---|
+| Initialized (`initialize` has run, so a primary admin is stored) | The stored primary-admin address — i.e. the exact address passed to `initialize` | Any other signer, including one holding an `Operator` role, is rejected with `NotAuthorized`. Clients operating an initialized contract must pass the stored primary admin as `admin`, not an operator. |
+| Uninitialized (no primary admin stored) | A signer holding an `Operator` role (or higher) in the RBAC map | `admin` is checked against the admin-role map. |
+
+`admin.require_auth()` is always invoked, so the invocation must be signed by the
+supplied `admin`. Emits the `contract_paused` (`ct_paused`) event.
+
 ### `unpause`
 
 ```rust
@@ -113,6 +124,13 @@ pub fn unpause(env: Env, admin: Address)
 ```
 
 Resumes normal contract operation.
+
+**Which signer can unpause (Issue #273):** authorization mirrors `pause` exactly.
+On an initialized deployment only the stored primary-admin address (the one passed
+to `initialize`) may unpause — pass it as `admin`; an `Operator` is rejected with
+`NotAuthorized`. On an uninitialized deployment an `Operator` role (or higher)
+suffices. `admin.require_auth()` is always invoked. Emits the `contract_unpaused`
+(`ct_unpsd`) event.
 
 ### `is_paused`
 
@@ -981,6 +999,79 @@ pub fn get_invoice_ext3(env: Env, invoice_id: u64) -> InvoiceExt3
 ```
 
 Returns Wave 6 extended fields including `release_delay_ledgers`, `metadata_hash`, `payment_token`, and `target_usd_cents`.
+
+### Hot invoice reads — `get_invoice_deadline`, `get_invoice_funded`, `get_invoice_status`
+
+```rust
+pub fn get_invoice_deadline(env: Env, invoice_id: u64) -> Option<u64>
+pub fn get_invoice_funded(env: Env, invoice_id: u64) -> Option<i128>
+pub fn get_invoice_status(env: Env, invoice_id: u64) -> Option<InvoiceStatus>
+```
+
+Compact reads of a single hot field, served from the instance hot-cache entry
+(`InvoiceHot`) when present and falling back to the persisted/instance core
+record otherwise. `get_invoice_status` is computed dynamically: a `Pending`
+invoice whose deadline has passed is surfaced as `Expired` without an on-chain
+`notify_expired` call.
+
+#### Missing-invoice behavior (Issue #278)
+
+The `Option<T>` return signatures are **not** used to represent absence. For an
+unknown `invoice_id` these functions trap with `ContractError::InvoiceNotFound`
+(error code `2`) instead of returning `None`. In practice the returned `Option`
+is always `Some` for a present invoice, so a generated client that treats a `None`
+result as "no such invoice" is mistaken — the call traps rather than returning
+`None`.
+
+Because absence surfaces as a trap, clients that need to distinguish "absent"
+from "present" must use the generated `try_*` variant and match on the
+`Err(InvoiceNotFound)` branch. The `try_*` variants convert the trap into a
+`Result`, so absence becomes a recoverable `Err` instead of a failed invocation.
+
+##### Rust client example (mirrors `test_get_invoice_*_not_found`)
+
+```rust
+// `try_get_invoice_funded` returns Result<Option<i128>, _>; the Err branch
+// carries InvoiceNotFound (code 2) for an unknown invoice_id.
+match c.try_get_invoice_funded(&invoice_id) {
+    Ok(Ok(Some(funded))) => { /* present invoice */ }
+    Ok(Ok(None)) => { /* unreachable for the on-chain trap path */ }
+    Ok(Err(e)) => { /* host error decoding the result */ }
+    Err(e) => {
+        // Absence lands here. Match the numeric code for InvoiceNotFound (= 2).
+        if e.code() == 2u32 {
+            // no such invoice — handle absence
+        } else {
+            // other contract error
+        }
+    }
+}
+```
+
+##### TypeScript client example
+
+For a Soroban client generated from the contract ABI, the `try_` invocation
+resolves with a `Result` whose `Err` carries the error code; treat code `2`
+(`InvoiceNotFound`) as "absent":
+
+```ts
+const result = await client.try_get_invoice_funded({ invoice_id });
+if (result.isErr()) {
+  if (result.error.code === 2 /* InvoiceNotFound */) {
+    // invoice does not exist — handle absence
+  } else {
+    // other contract error
+  }
+} else {
+  const funded = result.value; // i128
+}
+```
+
+##### Don't do this
+
+Calling the non-`try` variant (`get_invoice_funded`, `get_invoice_deadline`,
+`get_invoice_status`) on an unknown `invoice_id` traps with `InvoiceNotFound`
+and reverts the enclosing transaction; absence is **not** signalled via `None`.
 
 ## Auctions
 
