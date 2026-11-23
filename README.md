@@ -192,3 +192,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 
 <!-- handsoff-issue-267 -->
 - #267: Clamp payer history pages and handle large offsets safely
+
+<!-- handsoff-issue-268 -->
+- #268: Apply audit retention limits when appending invoice entries
