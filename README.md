@@ -190,8 +190,8 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 <!-- handsoff-issue-132 -->
 - #132: `set_admin_set` Allows Duplicate Signer Addresses Undermining Multisig Quorum Security
 
-<!-- handsoff-issue-265 -->
-- #265: Attach asset context to payment events from channel settlement
+<!-- handsoff-issue-267 -->
+- #267: Clamp payer history pages and handle large offsets safely
 
-<!-- handsoff-issue-266 -->
-- #266: Use payment shards for invoice payment statistics
+<!-- handsoff-issue-268 -->
+- #268: Apply audit retention limits when appending invoice entries

@@ -24,3 +24,10 @@ pub const MAX_AUCTION_BIDS: u32 = 100;
 /// Aligned with the recipient limit so that the largest valid inputs return
 /// finite CPU and memory estimates; larger values return a typed error.
 pub const MAX_ESTIMATE_COUNT: u64 = 100;
+
+/// Issue #272: Maximum number of tranches permitted in a single instalment plan.
+/// Bounding the vector length keeps per-plan persistent storage and the per-payment
+/// index-lookup within a predictable instruction budget regardless of how the plan
+/// was constructed. Plans with more than this many tranches are rejected at
+/// registration time before any storage write occurs.
+pub const MAX_INSTALMENT_TRANCHES: u32 = 64;
