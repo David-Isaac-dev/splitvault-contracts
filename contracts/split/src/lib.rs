@@ -2486,7 +2486,15 @@ fn check_and_emit_milestones(
 }
 
 /// Validate contract-level funding checkpoints. Checkpoints are basis-point
-/// thresholds and must be sorted ascending so events are emitted in order.
+/// thresholds and must be sorted in strictly ascending order so that
+/// `check_and_emit_funding_checkpoints` can iterate them in order and stop
+/// as soon as the current progress falls below the next threshold.
+///
+/// # Invariants enforced
+/// * Every value must be in `[1, 10_000]` (zero is excluded because progress
+///   starts at 0 and there is nothing to announce at the floor).
+/// * Values must be strictly increasing so each threshold fires at most once
+///   per invoice lifetime.
 fn validate_funding_checkpoints(checkpoints: &Vec<u32>) {
     let mut prev = 0u32;
     for checkpoint in checkpoints.iter() {
@@ -3460,7 +3468,37 @@ impl SplitContract {
 
     /// Configure contract-level funding progress checkpoints. Each checkpoint is
     /// a basis-point threshold (`10_000 = 100%`). The list must be sorted in
-    /// strictly ascending order and every value must be <= 10_000.
+    /// strictly ascending order and every value must be in `[1, 10_000]`.
+    ///
+    /// # Effect on invoices already underway (issue #270)
+    ///
+    /// Each invoice independently tracks the highest checkpoint it has already
+    /// announced in persistent storage (`last_checkpoint_key`).  The contract-
+    /// level list is global and can be replaced at any time by an Operator.
+    /// The interaction between replacements and in-flight invoices is:
+    ///
+    /// * **Thresholds added above `last_emitted`** — will fire the next time a
+    ///   payment moves the invoice past those thresholds.  No retroactive event
+    ///   is emitted if the invoice is already above a newly-added threshold;
+    ///   the threshold fires on the next contributing payment.
+    ///
+    /// * **Thresholds added at or below `last_emitted`** — permanently skipped
+    ///   for that invoice.  Because the guard in
+    ///   `check_and_emit_funding_checkpoints` requires
+    ///   `threshold > last_emitted`, a threshold that falls at or below the
+    ///   invoice's already-persisted high-water mark will never fire again,
+    ///   even if it was not in the previous list.
+    ///
+    /// * **Thresholds removed** — the per-invoice `last_emitted` value is never
+    ///   decremented, so removing a threshold that an invoice already passed has
+    ///   no observable effect.  Removing a threshold that an invoice has *not*
+    ///   yet reached means the event will simply never fire for that invoice.
+    ///
+    /// Operators should therefore treat the checkpoint list as append-only for
+    /// the highest-value thresholds when predictable per-invoice semantics are
+    /// required.  Lowering or removing thresholds is safe administratively but
+    /// will silently suppress those events for all existing invoices whose
+    /// `last_emitted` already meets or exceeds the removed value.
     pub fn set_funding_checkpoints(env: Env, admin: Address, checkpoints: Vec<u32>) {
         require_admin_role(&env, &admin, AdminRole::Operator);
         validate_funding_checkpoints(&checkpoints);
@@ -3478,9 +3516,18 @@ impl SplitContract {
     }
 
     /// Return the highest funding checkpoint already emitted for an invoice.
-    /// Returns `Some(bps)` for a known invoice and `None` for an unknown one,
-    /// letting callers distinguish a real zero-progress invoice from a missing
-    /// record (issue #276).
+    ///
+    /// Returns `Some(bps)` when the invoice exists and at least one checkpoint
+    /// event has been emitted for it; `Some(0)` when the invoice exists but no
+    /// checkpoint has fired yet (the per-invoice record is initialised to `0`
+    /// at creation time); and `None` only when no record exists at all, which
+    /// in practice means the invoice was created before this feature was
+    /// introduced or has been fully archived.
+    ///
+    /// This value is the **high-water mark**: it only moves forward.  Replacing
+    /// the contract-level checkpoint list (via `set_funding_checkpoints`) never
+    /// resets or decrements this value.  See `set_funding_checkpoints` for the
+    /// full semantics of list replacement on in-flight invoices (issue #270).
     pub fn get_last_funding_checkpoint(env: Env, invoice_id: u64) -> Option<u32> {
         env.storage()
             .persistent()
