@@ -5002,6 +5002,25 @@ impl SplitContract {
         env.storage().persistent().get(&key).unwrap_or(0)
     }
 
+    /// Register or replace an instalment plan for a payer on a given invoice.
+    ///
+    /// # Starting index (issue #271)
+    ///
+    /// A newly registered plan must always start from the first tranche.
+    /// `plan.paid_index` is therefore required to be `0` on entry; any other
+    /// value is rejected with a panic.  This prevents a payer from skipping
+    /// earlier tranches (and their ledger locks) by supplying a non-zero index
+    /// at registration time.
+    ///
+    /// # Replacement policy
+    ///
+    /// Calling `register_instalment_plan` again for the same `(invoice_id,
+    /// payer)` pair overwrites the existing plan in full, including resetting
+    /// `paid_index` to `0`.  This means any tranches that were already paid
+    /// under the old plan are **not** carried forward.  Callers that need to
+    /// amend a mid-flight plan should reconstruct the plan starting from the
+    /// already-paid tranche count and register with `paid_index = 0` for the
+    /// remaining tranches.
     pub fn register_instalment_plan(
         env: Env,
         payer: Address,
@@ -5010,6 +5029,13 @@ impl SplitContract {
     ) {
         payer.require_auth();
         assert!(!plan.tranches.is_empty(), "tranches must not be empty");
+        // Issue #271: paid_index must be 0 at registration time. Persisting a
+        // caller-supplied non-zero index would let a payer skip earlier tranches
+        // (and their ledger locks) entirely.
+        assert!(
+            plan.paid_index == 0,
+            "paid_index must be 0 when registering a new plan"
+        );
         let mut prev_ledger = 0;
         for i in 0..plan.tranches.len() {
             let t = plan.tranches.get(i).unwrap();
