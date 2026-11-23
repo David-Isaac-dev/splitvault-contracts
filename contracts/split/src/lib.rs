@@ -2490,7 +2490,15 @@ fn check_and_emit_milestones(
 }
 
 /// Validate contract-level funding checkpoints. Checkpoints are basis-point
-/// thresholds and must be sorted ascending so events are emitted in order.
+/// thresholds and must be sorted in strictly ascending order so that
+/// `check_and_emit_funding_checkpoints` can iterate them in order and stop
+/// as soon as the current progress falls below the next threshold.
+///
+/// # Invariants enforced
+/// * Every value must be in `[1, 10_000]` (zero is excluded because progress
+///   starts at 0 and there is nothing to announce at the floor).
+/// * Values must be strictly increasing so each threshold fires at most once
+///   per invoice lifetime.
 fn validate_funding_checkpoints(checkpoints: &Vec<u32>) {
     let mut prev = 0u32;
     for checkpoint in checkpoints.iter() {
@@ -3464,7 +3472,37 @@ impl SplitContract {
 
     /// Configure contract-level funding progress checkpoints. Each checkpoint is
     /// a basis-point threshold (`10_000 = 100%`). The list must be sorted in
-    /// strictly ascending order and every value must be <= 10_000.
+    /// strictly ascending order and every value must be in `[1, 10_000]`.
+    ///
+    /// # Effect on invoices already underway (issue #270)
+    ///
+    /// Each invoice independently tracks the highest checkpoint it has already
+    /// announced in persistent storage (`last_checkpoint_key`).  The contract-
+    /// level list is global and can be replaced at any time by an Operator.
+    /// The interaction between replacements and in-flight invoices is:
+    ///
+    /// * **Thresholds added above `last_emitted`** — will fire the next time a
+    ///   payment moves the invoice past those thresholds.  No retroactive event
+    ///   is emitted if the invoice is already above a newly-added threshold;
+    ///   the threshold fires on the next contributing payment.
+    ///
+    /// * **Thresholds added at or below `last_emitted`** — permanently skipped
+    ///   for that invoice.  Because the guard in
+    ///   `check_and_emit_funding_checkpoints` requires
+    ///   `threshold > last_emitted`, a threshold that falls at or below the
+    ///   invoice's already-persisted high-water mark will never fire again,
+    ///   even if it was not in the previous list.
+    ///
+    /// * **Thresholds removed** — the per-invoice `last_emitted` value is never
+    ///   decremented, so removing a threshold that an invoice already passed has
+    ///   no observable effect.  Removing a threshold that an invoice has *not*
+    ///   yet reached means the event will simply never fire for that invoice.
+    ///
+    /// Operators should therefore treat the checkpoint list as append-only for
+    /// the highest-value thresholds when predictable per-invoice semantics are
+    /// required.  Lowering or removing thresholds is safe administratively but
+    /// will silently suppress those events for all existing invoices whose
+    /// `last_emitted` already meets or exceeds the removed value.
     pub fn set_funding_checkpoints(env: Env, admin: Address, checkpoints: Vec<u32>) {
         require_admin_role(&env, &admin, AdminRole::Operator);
         validate_funding_checkpoints(&checkpoints);
@@ -3482,9 +3520,18 @@ impl SplitContract {
     }
 
     /// Return the highest funding checkpoint already emitted for an invoice.
-    /// Returns `Some(bps)` for a known invoice and `None` for an unknown one,
-    /// letting callers distinguish a real zero-progress invoice from a missing
-    /// record (issue #276).
+    ///
+    /// Returns `Some(bps)` when the invoice exists and at least one checkpoint
+    /// event has been emitted for it; `Some(0)` when the invoice exists but no
+    /// checkpoint has fired yet (the per-invoice record is initialised to `0`
+    /// at creation time); and `None` only when no record exists at all, which
+    /// in practice means the invoice was created before this feature was
+    /// introduced or has been fully archived.
+    ///
+    /// This value is the **high-water mark**: it only moves forward.  Replacing
+    /// the contract-level checkpoint list (via `set_funding_checkpoints`) never
+    /// resets or decrements this value.  See `set_funding_checkpoints` for the
+    /// full semantics of list replacement on in-flight invoices (issue #270).
     pub fn get_last_funding_checkpoint(env: Env, invoice_id: u64) -> Option<u32> {
         env.storage()
             .persistent()
@@ -5006,6 +5053,25 @@ impl SplitContract {
         env.storage().persistent().get(&key).unwrap_or(0)
     }
 
+    /// Register or replace an instalment plan for a payer on a given invoice.
+    ///
+    /// # Starting index (issue #271)
+    ///
+    /// A newly registered plan must always start from the first tranche.
+    /// `plan.paid_index` is therefore required to be `0` on entry; any other
+    /// value is rejected with a panic.  This prevents a payer from skipping
+    /// earlier tranches (and their ledger locks) by supplying a non-zero index
+    /// at registration time.
+    ///
+    /// # Replacement policy
+    ///
+    /// Calling `register_instalment_plan` again for the same `(invoice_id,
+    /// payer)` pair overwrites the existing plan in full, including resetting
+    /// `paid_index` to `0`.  This means any tranches that were already paid
+    /// under the old plan are **not** carried forward.  Callers that need to
+    /// amend a mid-flight plan should reconstruct the plan starting from the
+    /// already-paid tranche count and register with `paid_index = 0` for the
+    /// remaining tranches.
     pub fn register_instalment_plan(
         env: Env,
         payer: Address,
@@ -5014,12 +5080,12 @@ impl SplitContract {
     ) {
         payer.require_auth();
         assert!(!plan.tranches.is_empty(), "tranches must not be empty");
-        // Issue #272: reject plans that exceed the supported tranche count before
-        // writing anything to storage. This bounds both the persistent payload size
-        // and the per-payment index scan to a predictable instruction budget.
+        // Issue #271: paid_index must be 0 at registration time. Persisting a
+        // caller-supplied non-zero index would let a payer skip earlier tranches
+        // (and their ledger locks) entirely.
         assert!(
-            plan.tranches.len() <= MAX_INSTALMENT_TRANCHES,
-            "instalment plan exceeds maximum tranche count"
+            plan.paid_index == 0,
+            "paid_index must be 0 when registering a new plan"
         );
         let mut prev_ledger = 0;
         for i in 0..plan.tranches.len() {
@@ -17013,16 +17079,28 @@ impl SplitContract {
         invoice.payments.len() as u32
     }
 
-    /// Get the funding percentage of an invoice as basis points.
-    /// Returns (funded * 10_000 / total) as u32, or 0 if total is 0.
+    /// Get the funding ratio of an invoice expressed in basis points (0 – 10 000).
+    ///
+    /// This is the **canonical** basis-point view: the return value is always
+    /// clamped to `[0, 10_000]`, so overfunded invoices report exactly `10_000`
+    /// (100 %) rather than a value above the denominator.  Clients that need to
+    /// distinguish overfunding from exact full-funding should compare
+    /// `get_invoice_funded` against the invoice total directly.
+    ///
+    /// Internally delegates to [`funding_bps`] (the same helper used by
+    /// `get_invoice_funding_progress` and `check_and_emit_funding_checkpoints`)
+    /// so all three surfaces agree on the capped ratio.
+    ///
+    /// # Compatibility note
+    /// Prior to issue #269 this method performed a raw, uncapped integer
+    /// division `(funded * 10_000) / total`, which could exceed `10_000` for
+    /// overfunded invoices.  The return type and name are unchanged; callers
+    /// that previously relied on the uncapped value to detect overfunding must
+    /// migrate to comparing funded / total directly.
     pub fn get_invoice_funding_percentage(env: Env, invoice_id: u64) -> u32 {
         let invoice = load_invoice(&env, invoice_id);
         let total: i128 = invoice.amounts.iter().sum();
-        if total == 0 {
-            0
-        } else {
-            ((invoice.funded * 10_000) / total) as u32
-        }
+        funding_bps(invoice.funded, total)
     }
 
     /// Issue #246: Get the number of distinct payers for an invoice.
