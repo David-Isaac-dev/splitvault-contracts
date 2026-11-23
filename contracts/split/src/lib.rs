@@ -17,6 +17,10 @@ const ARCHIVE_AFTER_LEDGERS: u64 = 100_000;
 /// unbounded storage growth).
 const MAX_CO_CREATORS: usize = 10;
 
+/// Issue #272: Maximum number of tranches per instalment plan.
+/// Caps the persistent payload and the per-payment index scan to a fixed budget.
+const MAX_INSTALMENT_TRANCHES: u32 = 64;
+
 /// Default dispute timeout in ledgers (30 days at ~5 s/ledger).
 const DEFAULT_DISPUTE_TIMEOUT_LEDGERS: u32 = 518_400;
 /// Default expiry window (in ledgers) for payer-raised disputes when no
@@ -5010,6 +5014,13 @@ impl SplitContract {
     ) {
         payer.require_auth();
         assert!(!plan.tranches.is_empty(), "tranches must not be empty");
+        // Issue #272: reject plans that exceed the supported tranche count before
+        // writing anything to storage. This bounds both the persistent payload size
+        // and the per-payment index scan to a predictable instruction budget.
+        assert!(
+            plan.tranches.len() <= MAX_INSTALMENT_TRANCHES,
+            "instalment plan exceeds maximum tranche count"
+        );
         let mut prev_ledger = 0;
         for i in 0..plan.tranches.len() {
             let t = plan.tranches.get(i).unwrap();
