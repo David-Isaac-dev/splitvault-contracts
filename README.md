@@ -189,3 +189,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 
 <!-- handsoff-issue-132 -->
 - #132: `set_admin_set` Allows Duplicate Signer Addresses Undermining Multisig Quorum Security
+
+<!-- handsoff-issue-265 -->
+- #265: Attach asset context to payment events from channel settlement
