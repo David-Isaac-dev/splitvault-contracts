@@ -192,3 +192,6 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contribution guide.
 
 <!-- handsoff-issue-265 -->
 - #265: Attach asset context to payment events from channel settlement
+
+<!-- handsoff-issue-266 -->
+- #266: Use payment shards for invoice payment statistics
